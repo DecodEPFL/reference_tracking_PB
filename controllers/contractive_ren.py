@@ -141,6 +141,9 @@ class ContractiveREN(nn.Module):
         y_out = F.linear(self.x, self.C2) + F.linear(w, self.D21) + F.linear(u_in, self.D22)
         return y_out
 
+    def reset(self):
+        self.x = self.init_x  # reset the REN state to the initial value
+
     # init trainable params
     def _init_trainable_params(self, initialization_std):
         for training_param_name in self.training_param_names:  # name of one of the training params, e.g., X

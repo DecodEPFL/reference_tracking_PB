@@ -1,9 +1,13 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import math
+import time
 
+from argparse import Namespace
 from config import device
 from .contractive_ren import ContractiveREN
+from .MLP import MLP
 from utils.assistive_functions import to_tensor
 
 
@@ -48,6 +52,9 @@ class PerfBoostController(nn.Module):
         # set initial conditions
         self.input_init = input_init.reshape(1, -1)
         self.output_init = output_init.reshape(1, -1)
+        self.vg_init = torch.zeros(1,4).reshape(1,-1)
+        self.xbar_init = torch.zeros(1,4).reshape(1,-1)
+
 
         # set dimensions
         self.dim_in = self.input_init.shape[-1]
@@ -61,6 +68,8 @@ class PerfBoostController(nn.Module):
             posdef_tol=posdef_tol, contraction_rate_lb=contraction_rate_lb
         ).to(device)
 
+        self.MLP = MLP(dim_out = self.dim_out)
+
         # define the system dynamics without process noise
         self.noiseless_forward = noiseless_forward
 
@@ -73,9 +82,12 @@ class PerfBoostController(nn.Module):
         self.t = 0  # time
         self.last_input = self.input_init.detach().clone()
         self.last_output = self.output_init.detach().clone()
+        self.last_vg = self.vg_init.detach().clone()
+        self.last_xbar = self.xbar_init.detach().clone()
+
         self.c_ren.x = self.c_ren.init_x    # reset the REN state to the initial value
 
-    def forward(self, input_t: torch.Tensor):
+    def forward(self, input_t: torch.Tensor,vg:torch.Tensor,xbar:torch.Tensor,):
         """
         Forward pass of the controller.
 
@@ -87,22 +99,33 @@ class PerfBoostController(nn.Module):
             y_out (torch.Tensor): Output with (batch_size, 1, self.dim_out).
         """
 
+
         # apply noiseless forward to get noise less input (noise less state of the plant)
-        u_noiseless = self.noiseless_forward(
+        u_noiseless, _ = self.noiseless_forward(
             t=self.t,
             x=self.last_input,  # last input to the controller is the last state of the plant
-            u=self.last_output  # last output of the controller is the last input to the plant
+            u=self.last_output, 
+            v=self.last_vg,
+            xbar = self.last_xbar  # last output of the controller is the last input to the plant
         )  # shape = (self.batch_size, 1, self.dim_in)
 
         # reconstruct the noise
         w_ = input_t - u_noiseless # shape = (self.batch_size, 1, self.dim_in)
 
         # apply REN
-        output = self.c_ren.forward(w_)
-        output = output*self.output_amplification   # shape = (self.batch_size, 1, self.dim_out)
+        output_REN = self.c_ren.forward(w_)
+        mlp_input = torch.cat((w_, xbar), dim=2)
+        mlp_input = mlp_input.view(input_t.shape[0],1, -1)
+   
 
+        # apply MLP on reference plus disturbance 
+        output_MLP = self.MLP.forward(mlp_input)
+
+        output = output_REN*output_MLP*self.output_amplification   # shape = (self.batch_size, 1, self.dim_out)
+        #output = torch.clamp(output,min = -10,max = 10)
         # update internal states
-        self.last_input, self.last_output = input_t, output
+        self.last_input, self.last_output, self.last_xbar = input_t, output, xbar
+        self.last_vg = vg
         self.t += 1
         return output
 
@@ -116,10 +139,18 @@ class PerfBoostController(nn.Module):
     def get_parameters_as_vector(self):
         # TODO: implement without numpy
         return np.concatenate([p.detach().clone().cpu().numpy().flatten() for p in self.c_ren.parameters()])
+    
+    def get_mlp_parameters(self):
+        # TODO: implement without numpy
+        return self.MLP.state_dict()
+    
+    def set_mlp_parameters(self,params):
+        # TODO: implement without numpy
+        self.MLP.load_state_dict(params)
 
     def set_parameter(self, name, value):
         current_val = getattr(self.c_ren, name)
-        value = torch.nn.Parameter(value.reshape(current_val.shape))
+        value = torch.nn.Parameter(to_tensor(value.reshape(current_val.shape)))
         setattr(self.c_ren, name, value)
         self.c_ren._update_model_param()    # update dependent params
 

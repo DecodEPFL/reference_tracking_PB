@@ -5,13 +5,15 @@ from config import device
 
 class RobotsLoss(LQLossFH):
     def __init__(
-        self, xbar, Q, alpha_u=1,
+        self, xbar, Q,Qs, alpha_u=1,
         alpha_col=None, alpha_obst=None,
         loss_bound=None, sat_bound=None,
         n_agents=2, min_dist=0.5,
         obstacle_centers=None, obstacle_covs=None
     ):
-        super().__init__(Q=Q, R=alpha_u, loss_bound=loss_bound, sat_bound=sat_bound, xbar=xbar)
+        super().__init__(Q=Q, R=alpha_u, loss_bound=loss_bound, sat_bound=sat_bound, xbar=None)
+        self.Qs = Qs
+        self.xbar = xbar
         self.n_agents = n_agents
         self.alpha_col, self.alpha_obst, self.min_dist = alpha_col, alpha_obst, min_dist
         assert (self.alpha_col is None and self.min_dist is None) or not (self.alpha_col is None or self.min_dist is None)
@@ -37,7 +39,7 @@ class RobotsLoss(LQLossFH):
         # mask
         self.mask = torch.logical_not(torch.eye(self.n_agents, device=device))   # shape = (n_agents, n_agents)
 
-    def forward(self, xs, us):
+    def forward(self, xs, us,es):
         """
         Compute loss.
 
@@ -51,16 +53,28 @@ class RobotsLoss(LQLossFH):
         # batch
         x_batch = xs.reshape(*xs.shape, 1)
         u_batch = us.reshape(*us.shape, 1)
+        e_batch = es.reshape(*es.shape, 1)
+        
+        """x_bar = self.xbar.reshape(*self.xbar.shape,1)
         # loss states = 1/T sum_{t=1}^T (x_t-xbar)^T Q (x_t-xbar)
         if self.xbar is not None:
-            x_batch_centered = x_batch - self.xbar
+            x_batch_centered = x_batch - x_bar
         else:
-            x_batch_centered = x_batch
+            x_batch_centered = x_batch"""
+        speed = x_batch[:,:,[2,3,6,7]]
+
         xTQx = torch.matmul(
-            torch.matmul(x_batch_centered.transpose(-1, -2), self.Q),
-            x_batch_centered
+            torch.matmul(e_batch.transpose(-1, -2), self.Q),
+            e_batch
         )   # shape = (S, T, 1, 1)
-        loss_x = torch.sum(xTQx, 1) / x_batch.shape[1]    # average over the time horizon. shape = (S, 1, 1)
+        loss_x = torch.sum(xTQx, 1) / e_batch.shape[1]   # average over the time horizon. shape = (S, 1, 1)
+
+        sTQs = torch.matmul(
+            torch.matmul(speed.transpose(-1, -2), self.Q),
+            speed
+        )   # shape = (S, T, 1, 1)
+        loss_speed = torch.sum(sTQs, 1) / speed.shape[1] 
+
         # loss control actions = 1/T sum_{t=1}^T u_t^T R u_t
         uTRu = self.R * torch.matmul(
             u_batch.transpose(-1, -2),
@@ -78,7 +92,7 @@ class RobotsLoss(LQLossFH):
         else:
             loss_obst = self.alpha_obst * self.f_loss_obst(x_batch) # shape = (S, 1, 1)
         # sum up all losses
-        loss_val = loss_x + loss_u + loss_ca + loss_obst            # shape = (S, 1, 1)
+        loss_val = loss_x + loss_u + loss_ca + loss_obst + loss_speed           # shape = (S, 1, 1)
         # bound
         if self.sat_bound is not None:
             loss_val = torch.tanh(loss_val/self.sat_bound)  # shape = (S, 1, 1)
