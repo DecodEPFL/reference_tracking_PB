@@ -9,6 +9,7 @@ def argument_parser():
     parser.add_argument('--random-seed', type=int, default=5, help='Random seed. Default is 5.')
     parser.add_argument('--col-av', type=bool, default=True, help='Avoid collisions. Default is True.')
     parser.add_argument('--obst-av', type=bool, default=True, help='Avoid obstacles. Default is True.')
+    parser.add_argument('--no-gpu', action='store_true', help='Run on CPU and skip CUDA checks. Default is False.')
 
     # dataset
     parser.add_argument('--horizon', type=int, default=100, help='Time horizon for the computation. Default is 100.')
