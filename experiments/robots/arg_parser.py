@@ -39,6 +39,10 @@ def argument_parser():
     parser.add_argument('--log-epoch', type=int, default=-1, help='Frequency of logging in epochs. Default is 0.1 * epochs.')
     parser.add_argument('--return-best', type=bool, default=True, help='Return the best model on the validation data among all logged iterations. The train data can be used instead of validation data. The Default is True.')
 
+    #threads
+    parser.add_argument('--num-threads', type=int, default=1, help='Number of threads for PyTorch. Default is 10.')
+    parser.add_argument('--num-interop-threads', type=int, default=1, help='Number of inter-op threads for PyTorch. Default is 1.')
+
     # TODO: add the following
     # parser.add_argument('--patience-epoch', type=int, default=None, help='Patience epochs for no progress. Default is None which sets it to 0.2 * total_epochs.')
     # parser.add_argument('--lr-start-factor', type=float, default=1.0, help='Start factor of the linear learning rate scheduler. Default is 1.0.')

@@ -15,6 +15,7 @@ from utils.assistive_functions import WrapLogger
 
 
 def main():
+
     """
     Train and evaluate a performance boosting controller on the robots reference-tracking task.
 
@@ -45,6 +46,10 @@ def main():
     msg = print_args(args)
     logger.info(msg)
     torch.manual_seed(args.random_seed)
+
+
+    torch.set_num_threads(args.num_threads)
+    torch.set_num_interop_threads(args.num_interhop_threads)
 
 
 
