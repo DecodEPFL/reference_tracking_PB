@@ -1,0 +1,9 @@
+torch>=2.3
+numpy>=1.24.4
+scipy>=1.13.1
+matplotlib>=3.8.4
+imageio
+pytest
+# contextual SSM operators (ContextualDeepSSM); same commit as Context_PB's DockerfileRCP
+deel-torchlip==1.0.5
+neural_ssm @ git+https://github.com/DecodEPFL/SSM.git@32fa0e468b818593b7cb69d5483587759de3ae16
