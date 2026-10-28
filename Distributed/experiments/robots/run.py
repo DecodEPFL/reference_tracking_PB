@@ -12,6 +12,7 @@ from Distributed.plants import RobotsSystem, RobotsDataset
 from Distributed.plants.robots.robots_dataset import scenario_xbar
 from Distributed.utils.plot_functions import *
 from Distributed.controllers import build_controller, agent_operators, ssm_core_parameters
+from Distributed.controllers.interconnection import adjacency_folder
 from Distributed.loss_functions import RobotsLoss
 from Distributed.utils.assistive_functions import WrapLogger
 
@@ -22,14 +23,16 @@ def main():
 
     This script is intentionally self-contained: it generates synthetic rollouts/references,
     trains by backpropagating through closed-loop rollouts, and writes all artifacts (logs, plots,
-    checkpoints) under `experiments/robots/saved_results/`.
+    checkpoints) under `experiments/robots/saved_results/<n>_robots/<adjacency>/`.
     """
     # ----- parse experiment arguments -----
     args = argument_parser()
+    torch.set_num_threads(args.num_threads)
 
     # ----- SET UP LOGGER / OUTPUT FOLDERS -----
     now = datetime.now().strftime("%m_%d_%H_%M_%S")
-    save_path = os.path.join(BASE_DIR, 'experiments', 'robots', 'saved_results')
+    save_path = os.path.join(BASE_DIR, 'experiments', 'robots', 'saved_results', '%i_robots' % args.n_agents,
+                             adjacency_folder(args.adjacency))
 
     save_folder = os.path.join(save_path, 'pb_%s_%s_%s' % (args.mp_type, args.mb_type, now))
     save_folder_gif = os.path.join(save_folder, 'gifs')

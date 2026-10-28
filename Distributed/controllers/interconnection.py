@@ -72,6 +72,16 @@ def make_adjacency(spec: str, n_agents: int) -> torch.Tensor:
     return adj
 
 
+def adjacency_folder(spec: str) -> str:
+    """Folder name of an --adjacency spec: the graph name, or "matrix_<rows>" for an explicit
+    matrix ("0,1;1,0" -> "matrix_01-10")."""
+    spec = str(spec).strip()
+    if spec in ADJACENCY_GRAPHS:
+        return spec
+    rows = ["".join("%g" % float(v) for v in row.split(",")) for row in spec.split(";")]
+    return "matrix_" + "-".join(rows)
+
+
 def neighbor_lists(adjacency: torch.Tensor) -> list[list[int]]:
     """Neighbors of each agent, ordered relative to it ((j - i) mod N), so with shared weights
     a given slot always holds the same relative neighbor (e.g. next / previous on a ring)."""

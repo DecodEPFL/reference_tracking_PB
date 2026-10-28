@@ -50,6 +50,7 @@ class DistributedOperator(OperatorBase):
             A ``RelayFeatures`` also appends the relayed disturbances to w^i.
         batch_agents: run independent agent operators in one vmapped call (AgentBatch). Raises
             NotImplementedError if the operators do not support it (see AgentBatch).
+        compile_agents: with batch_agents, also compile the vmapped step with torch.compile.
     """
 
     def __init__(
@@ -60,6 +61,7 @@ class DistributedOperator(OperatorBase):
         u_idx: Sequence[Sequence[int]],
         neighbor_features: Optional[NeighborFeatures | RelayFeatures] = None,
         batch_agents: bool = False,
+        compile_agents: bool = False,
     ):
         super().__init__()
         self.n_agents = len(w_idx)
@@ -83,7 +85,7 @@ class DistributedOperator(OperatorBase):
         self.register_buffer("u_idx", torch.as_tensor(u_idx, dtype=torch.long), persistent=False)
         self.u_dim = int(self.u_idx.numel())
         # plain attribute (not a submodule): holds a template copy that must stay out of the parameters
-        self.agent_batch = AgentBatch(self.agent_ops) if batch_agents and not self.share_weights else None
+        self.agent_batch = AgentBatch(self.agent_ops, compile=compile_agents) if batch_agents and not self.share_weights else None
 
     @property
     def uses_feedback(self) -> bool:

@@ -12,7 +12,7 @@ from Distributed.plants import RobotsSystem, RobotsFormationDataset
 from Distributed.plants.robots.formation_dataset import formation_state
 from Distributed.utils.plot_functions import *
 from Distributed.controllers import build_controller, agent_operators, ssm_core_parameters
-from Distributed.controllers.interconnection import make_adjacency
+from Distributed.controllers.interconnection import adjacency_folder, make_adjacency
 from Distributed.loss_functions import RobotsFormationLoss
 from Distributed.utils.assistive_functions import WrapLogger
 
@@ -125,10 +125,11 @@ def main():
 
     Same pipeline as experiments/robots/run.py (plant, distributed controller, training loop),
     with the formation dataset and loss, formation metrics in the logs and formation plots/GIFs.
-    All artifacts go to `experiments/robots_formation/saved_results/<n>_robots/`.
+    All artifacts go to `experiments/robots_formation/saved_results/<n>_robots/<adjacency>/`.
     """
     # ----- parse experiment arguments -----
     args = argument_parser()
+    torch.set_num_threads(args.num_threads)
     # training state of the run to continue: weights, optimizer, epoch, best model and RNG
     resume_state = None
     if args.resume is not None:
@@ -139,7 +140,8 @@ def main():
 
     # ----- SET UP LOGGER / OUTPUT FOLDERS -----
     now = datetime.now().strftime("%m_%d_%H_%M_%S")
-    save_path = os.path.join(BASE_DIR, 'experiments', 'robots_formation', 'saved_results', '%i_robots' % args.n_agents)
+    save_path = os.path.join(BASE_DIR, 'experiments', 'robots_formation', 'saved_results', '%i_robots' % args.n_agents,
+                             adjacency_folder(args.adjacency))
 
     save_folder = os.path.join(save_path, 'pb_%s_%s_%s' % (args.mp_type, args.mb_type, now))
     save_folder_gif = os.path.join(save_folder, 'gifs')

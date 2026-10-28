@@ -11,5 +11,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # The step-by-step closed-loop rollouts are made of many tiny ops: extra intra-op threads only
 # spin (measured on an M3 Max: 1 thread 4.5 s/epoch and 4.5 CPU-s, 10 threads 5.1 s/epoch and 52 CPU-s,
-# identical losses). Override with the env var TORCH_NUM_THREADS.
-torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", 1)))
+# identical losses). The experiments override it with --num-threads.
+torch.set_num_threads(1)
+# Decaying SSM states reach subnormal floats, which are very slow on x86 (measured on an AMD EPYC 9124:
+# 23 s/epoch -> 16 s/epoch with flushing). No effect where unsupported (returns False).
+torch.set_flush_denormal(True)

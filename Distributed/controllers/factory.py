@@ -330,7 +330,8 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
             warnings.warn(f"--batch-agents disabled, running the agents one by one: {exc}")
             batch_agents = False
     operator = DistributedOperator(agent_ops, w_idx=w_idx, z_idx=z_idx, u_idx=plant.input_idx,
-                                   neighbor_features=neighbors, batch_agents=batch_agents)
+                                   neighbor_features=neighbors, batch_agents=batch_agents,
+                                   compile_agents=bool(getattr(args, "compile", False)))
     operator.param_budget = budget                                   # None unless size-matched
     operator.widths = {k: getattr(args, k, None) for k in WIDTH_ARGS}   # widths actually built
     return operator

@@ -34,6 +34,8 @@ def build_parser(description="Robots minimal experiment."):
     parser.add_argument('--context', type=str, default='ref', choices=['ref', 'none'], help='Context z fed to the operator: the reference positions, or zeros (disturbance-only baseline). Default is ref.')
     parser.add_argument('--share-weights', action=bool_flag, default=False, help='Share one operator M across all agents instead of an independent M^i per agent. Default is False.')
     parser.add_argument('--batch-agents', action=bool_flag, default=False, help='With independent weights, run the N agent operators in one vectorised call (torch.func.vmap) instead of one after the other: same results up to float rounding, faster. Falls back to the loop (with a warning) if unsupported. Default is False.')
+    parser.add_argument('--num-threads', type=int, default=1, help='PyTorch intra-op threads. The closed-loop rollouts are many tiny ops, so extra threads only spin: keep 1 and run several jobs in parallel instead. Set OMP_NUM_THREADS / MKL_NUM_THREADS in the environment as well, they are read before the args. Default is 1.')
+    parser.add_argument('--compile', action=bool_flag, default=False, help='With --batch-agents, compile the vmapped agent step with torch.compile: about 2.4x faster per training step on CPU, same results up to float rounding; the first steps pay the compilation (needs a C++ compiler). Default is False.')
     parser.add_argument('--match-centralized-size', action=bool_flag, default=True, help='With independent weights, shrink the widths of every M^i so all N operators together have at most the parameters of the centralized M. Default is True.')
     parser.add_argument('--info-pattern', type=str, default='local', choices=INFO_PATTERNS, help='Signals seen by M^i: its own w^i and z^i (local); all of w and z as the centralized M sees them (full; own agent first with --share-weights); or local plus, for each neighbor j on --adjacency, the relative position, distance and previous input u^j_{t-1} (neighbors; plus the target z^j with --neighbor-targets); or exactly the inputs of the centralized controller with --pair-features: all of w and z plus the relative position of every pair of robots measured from x_t (centralized; independent weights only); or the centralized inputs relayed over --adjacency, every robot forwarding what it receives with --relay-hop-delay steps per hop: the disturbances w^j_{t-d} of every robot j reaching it in the SSM input, and its targets z^j_{t-d} and relative positions p^j_{t-d} - p^i_{t-d} in the context, d the delay of the shortest path from j (relay; plus the inputs u^j_{t-d} with --relay-inputs). Default is local.')
     parser.add_argument('--neighbor-targets', action=bool_flag, default=True, help='Under --info-pattern neighbors, every neighbor j also sends its target z^j. Default is True.')
@@ -180,6 +182,8 @@ def print_args(args):
     msg += '\n[INFO] Controller: distributed (%s weights, info: %s) -- M_p: %s -- M_b: %s -- context: %s' % ('shared' if args.share_weights else 'independent', info, args.mp_type, args.mb_type, args.context)
     if args.batch_agents and not args.share_weights:
         msg += ' -- agents batched (vmap)'
+        if args.compile:
+            msg += ' (compiled)'
     if args.mb_type == 'bounded_mlp':
         msg += ' -- rank s: %i' % args.feat_dim
     if args.mp_type == 'ren':
@@ -204,5 +208,6 @@ def print_args(args):
 
     msg += '\n[INFO] Optimizer: lr: %.2e (x%.2f for mixer/heads)' % (args.lr, args.lr_ratio)
     msg += ' -- batch_size: %i' % args.batch_size + ', -- return best model for validation data among logged epochs:' + str(args.return_best)
+    msg += '\n[INFO] Threads: %i' % args.num_threads
 
     return msg

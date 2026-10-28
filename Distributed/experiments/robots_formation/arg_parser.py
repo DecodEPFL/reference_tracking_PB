@@ -106,6 +106,8 @@ def resume_args(args, argv=None):
     argv = sys.argv[1:] if argv is None else argv
     resumed = argparse.Namespace(**{**vars(args), **saved})   # args added since that run keep their defaults
     resumed.resume = args.resume
+    # how to run, not what to train: from the command line
+    resumed.num_threads, resumed.compile = args.num_threads, args.compile
     given = lambda flag: any(a == flag or a.startswith(flag + '=') for a in argv)
     if given('--epochs'):
         resumed.epochs = args.epochs
