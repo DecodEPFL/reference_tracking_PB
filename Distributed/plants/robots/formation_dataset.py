@@ -222,10 +222,11 @@ class RobotsFormationDataset(CostumDataset):
         x[..., 2:] = -x[..., 2:]
         data[mask, 0, :sd] = x.flatten(1)
         # the offsets are centred on 0: the target centre is the mean of the target positions
-        xbar = data[mask, 1:, sd:]
+        # (columns after 2 sd, the sticky patches if any, are left as they are)
+        xbar = data[mask, 1:, sd:2 * sd]
         xbar = xbar.reshape(*xbar.shape[:2], n, 4)
         xbar[..., :2] = 2 * xbar[..., :2].mean(-2, keepdim=True) - xbar[..., :2]
-        data[mask, 1:, sd:] = xbar.flatten(2)
+        data[mask, 1:, sd:2 * sd] = xbar.flatten(2)
         return data
 
     def _flip_some(self, data, frac, generator):

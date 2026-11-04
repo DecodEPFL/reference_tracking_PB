@@ -268,6 +268,10 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
                          "all agents would compute the same thing; use independent weights.")
     w_idx = agent_channels(plant.state_idx, info_pattern, ego_first=args.share_weights)
     z_idx = agent_channels(plant.ref_idx, info_pattern, ego_first=args.share_weights)
+    # sticky patches: measured drag scale of the own agent (all of them under full / centralized)
+    drag = getattr(plant, "drag_idx", None)
+    d_idx = agent_channels(drag, info_pattern, ego_first=args.share_weights) if drag is not None else None
+    n_drag = [len(d) for d in d_idx] if d_idx is not None else [0] * plant.n_agents
     u_dim = plant.agent_in_dim
     n = plant.n_agents
     relay = info_pattern == "relay"
@@ -290,17 +294,21 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
                                  # checkpoints saved before --relay-inputs-scale existed were not scaled
                                  input_scale=getattr(args, "relay_inputs_scale", 1.0),
                                  max_hops=getattr(args, "relay_max_hops", 0) or None,   # 0: no limit
-                                 pad=pad)
+                                 pad=pad,
+                                 # sticky patches: the measured drags are relayed like the positions
+                                 drag_idx=getattr(plant, "drag_idx", None))
         return None
 
     def input_dims(neighbors):
         # input widths of each M^i: its own w and z channels plus what its neighbors send
         w_dims = [len(w_idx[i]) + (neighbors.w_out_dims[i] if relay else 0) for i in range(n)]
-        z_dims = [len(z_idx[i]) + (neighbors.out_dims[i] if neighbors is not None else 0) for i in range(n)]
+        z_dims = [len(z_idx[i]) + n_drag[i] + (neighbors.out_dims[i] if neighbors is not None else 0) for i in range(n)]
         # neighbor signals computed from x and u (relative positions, inputs) would close a feedback
         # loop around the plant through the SSM input port: only the targets z drive it (z^i, all of
         # them under "centralized", z^i and the relayed targets under "relay")
-        input_z_dims = [None if neighbors is None else len(z_idx[i]) + (neighbors.target_dims[i] if relay else 0)
+        # the drag scale is measured on the state too: it comes right after that prefix (drag_pos), out of it
+        input_z_dims = [None if (neighbors is None and drag is None)
+                        else len(z_idx[i]) + (neighbors.target_dims[i] if relay else 0)
                         for i in range(n)]
         # relayed inputs kept out of the gate and select ports (mixers, mb) and of the SSM mixer port (mb),
         # so they never reach the SSM state; checkpoints saved before --relay-inputs-to existed fed them to every port
@@ -333,6 +341,8 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
         # under "centralized" and "relay" the reference M is the centralized one with pair features
         central_z_dim = (plant.in_dim + PairOffsetFeatures(plant.agent_pos_idx).out_dims[0]
                          if info_pattern in ("centralized", "relay") else None)
+        if drag is not None:    # the centralized M also measures the drag of every agent
+            central_z_dim = (plant.in_dim if central_z_dim is None else central_z_dim) + len(drag)
         # the real sizes: the padded columns are held at zero
         args, budget = match_centralized_size(args, plant, real_w_dims[:len(z_dims)], real_z_dims[:len(z_dims)],
                                               u_dim, central_z_dim)
@@ -342,8 +352,11 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
                  in zip(w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims)]
     if padded:
         for i, op in enumerate(agent_ops):
+            z_keep = [1.0] * len(z_idx[i]) + neighbors.context_masks[i]
+            if drag is not None:    # drag channels at drag_pos, as in DistributedOperator
+                z_keep = z_keep[:input_z_dims[i]] + [1.0] * n_drag[i] + z_keep[input_z_dims[i]:]
             mask_padded_inputs(op, w_keep=[1.0] * len(w_idx[i]) + (neighbors.w_masks[i] if relay else []),
-                               z_keep=[1.0] * len(z_idx[i]) + neighbors.context_masks[i])
+                               z_keep=z_keep)
     # one vmapped call for the N independent operators, if they support it and match the loop
     batch_agents = bool(getattr(args, "batch_agents", False)) and len(agent_ops) > 1
     if batch_agents and (len(set(w_dims)) > 1 or len(set(z_dims)) > 1):
@@ -357,7 +370,10 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
             batch_agents = False
     operator = DistributedOperator(agent_ops, w_idx=w_idx, z_idx=z_idx, u_idx=plant.input_idx,
                                    neighbor_features=neighbors, batch_agents=batch_agents,
-                                   compile_agents=bool(getattr(args, "compile", False)))
+                                   compile_agents=bool(getattr(args, "compile", False)),
+                                   drag_idx=d_idx,
+                                   # one position per agent (shared weights: the same for all)
+                                   drag_pos=None if drag is None else (input_z_dims * n if len(input_z_dims) == 1 else input_z_dims))
     operator.param_budget = budget                                   # None unless size-matched
     # padded sizes and real sizes of the M^i, if padded
     operator.input_padding = (w_dims[0], z_dims[0], real_w_dims, real_z_dims) if padded else None

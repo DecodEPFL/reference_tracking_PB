@@ -19,9 +19,8 @@ sys.path.insert(1, os.path.dirname(BASE_DIR))  # parent of Distributed/, for `Di
 
 from Distributed.controllers import build_controller
 from Distributed.experiments.robots_formation.run import (ZeroOperatorController, formation_obstacles,
-                                                           formation_scenarios, make_dataset, save_scenario_gif,
-                                                           verification_data)
-from Distributed.plants import RobotsSystem
+                                                           formation_scenarios, make_dataset, make_plant,
+                                                           save_scenario_gif, verification_data, verification_patches)
 from Distributed.utils.plot_functions import plot_trajectories
 from Distributed.controllers.interconnection import make_adjacency
 
@@ -46,12 +45,14 @@ def main(argv=None):
     adjacency = make_adjacency(args.formation_graph, n_agents)
     formation_pairs = dataset.plot_edges or torch.triu(((adjacency + adjacency.T) > 0).float(), diagonal=1).nonzero().tolist()
 
-    plant = RobotsSystem(linear_plant=args.linearize_plant, k=args.spring_const, n_agents=n_agents)
+    plant = make_plant(args)    # with the sticky patches of the run, if any
     ctl = build_controller(args, plant=plant)
     ctl.load_state_dict(ckpt['controller'])
 
     # same verification data as run.py: nominal start (and flipped, '<scenario>_fs'), constant target formation
-    names, data_verif = verification_data(dataset, scenarios, args.horizon)
+    names, data_verif = verification_data(dataset, scenarios, args.horizon,
+                                          patches=verification_patches(args, len(scenarios)))
+    patches_of = lambda k: data_verif[k, 0, 2 * state_dim:] if plant.n_patches else None
     rollouts = {}
     with torch.no_grad():
         if not cli.only_ref:
@@ -64,7 +65,7 @@ def main(argv=None):
     plot_text = {'trained': 'rPB - trained controller', 'ref': 'Baseline - operator off (u = 0)'}
     for stage, x_verif in rollouts.items():
         for k, name in enumerate(names):
-            xbar_k = data_verif[k, 1, state_dim:]
+            xbar_k = data_verif[k, 1, state_dim:2 * state_dim]
             plot = os.path.join(cli.run_folder, 'CL_%s_%s.pdf' % (name, stage))
             if os.path.exists(plot) and not cli.overwrite:
                 print(f'{name} ({stage}): {plot} exists, kept (use --overwrite to re-render)')
@@ -74,6 +75,7 @@ def main(argv=None):
                     filename='CL_%s_%s.pdf' % (name, stage), text=plot_text[stage], T=args.horizon * 4,
                     obstacle_centers=obstacle_centers, obstacle_covs=obstacle_covs,
                     formation_pairs=formation_pairs, formation_every=max(1, args.horizon // 5),
+                    patches=patches_of(k),
                 )
                 print(f'{name} ({stage}): wrote {plot}')
             target = os.path.join(gif_folder, 'CL_%s_%s.gif' % (name, stage))
@@ -84,7 +86,7 @@ def main(argv=None):
                 x_verif[k], xbar_k, name, stage, n_agents=n_agents, gif_folder=gif_folder,
                 horizon=args.horizon, interval=cli.interval or args.gif_interval,
                 obstacle_centers=obstacle_centers, obstacle_covs=obstacle_covs, formation_pairs=formation_pairs,
-                min_dist=args.min_dist,
+                min_dist=args.min_dist, patches=patches_of(k),
             )
             print(f'{name} ({stage}): wrote {target}')
 

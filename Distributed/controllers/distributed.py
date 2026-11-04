@@ -20,6 +20,16 @@ and their targets, relative positions (and inputs) in its context:
 
     u^i_t = M^i([w^i_t, w^j_{t-d_ij}, ...], [z^i_t, r^i(x, u, z, w)_t]).
 
+With sticky friction patches the context z also holds the (log) local drag scale s^i_t measured by every
+agent (``drag_idx``). It depends on the state, so it is inserted after the exogenous prefix of the
+context (``drag_pos``: z^i, plus the relayed targets under "relay") that alone drives the SSM input
+port, and before the relayed inputs that are the last channels:
+
+    z^i = [targets (input port prefix), s^i_t (or all s under full / centralized), neighbor signals].
+
+Under "relay" the sources' drags come right after the relayed targets, so the own drag joins them:
+[z^i, relayed targets, s^i_t, relayed drags s^j_{t-d}, offsets, inputs].
+
 With ``share_weights=True`` a single operator M is applied to every agent: the agents
 are folded into the batch dimension, so each agent keeps its own recurrent state.
 With independent weights and ``batch_agents=True`` the N operators run in one vectorised
@@ -51,6 +61,8 @@ class DistributedOperator(OperatorBase):
         batch_agents: run independent agent operators in one vmapped call (AgentBatch). Raises
             NotImplementedError if the operators do not support it (see AgentBatch).
         compile_agents: with batch_agents, also compile the vmapped step with torch.compile.
+        drag_idx: optional per-agent channels of z holding the measured drag scale (sticky patches).
+        drag_pos: position of those channels in the context of each M^i (see the module docstring).
     """
 
     def __init__(
@@ -62,6 +74,8 @@ class DistributedOperator(OperatorBase):
         neighbor_features: Optional[NeighborFeatures | RelayFeatures] = None,
         batch_agents: bool = False,
         compile_agents: bool = False,
+        drag_idx: Optional[Sequence[Sequence[int]]] = None,
+        drag_pos: Optional[Sequence[int]] = None,
     ):
         super().__init__()
         self.n_agents = len(w_idx)
@@ -84,6 +98,13 @@ class DistributedOperator(OperatorBase):
         self.register_buffer("z_idx", torch.as_tensor(z_idx, dtype=torch.long), persistent=False)
         self.register_buffer("u_idx", torch.as_tensor(u_idx, dtype=torch.long), persistent=False)
         self.u_dim = int(self.u_idx.numel())
+        if drag_idx is not None:
+            if drag_pos is None or len(drag_idx) != self.n_agents or len(drag_pos) != self.n_agents:
+                raise ValueError("drag_idx and drag_pos must list every agent.")
+            self.register_buffer("drag_idx", torch.as_tensor(drag_idx, dtype=torch.long), persistent=False)
+        else:
+            self.drag_idx = None
+        self.drag_pos = None if drag_pos is None else [int(e) for e in drag_pos]
         # plain attribute (not a submodule): holds a template copy that must stay out of the parameters
         self.agent_batch = AgentBatch(self.agent_ops, compile=compile_agents) if batch_agents and not self.share_weights else None
 
@@ -125,6 +146,14 @@ class DistributedOperator(OperatorBase):
         B, T = w.shape[:2]
         w_ag = self._split(w, self.w_idx)                                   # (B, T, N, dw)
         z_ag = self._split(z, self.z_idx) if z is not None else None        # (B, T, N, dz)
+        d_ag = self._split(z, self.drag_idx) if (z is not None and self.drag_idx is not None) else None   # (B, T, N, dd)
+
+        def with_drag(z_i, i, d_i):
+            # measured drag scale inserted after the exogenous prefix of the context of agent i
+            if d_i is None:
+                return z_i
+            e = self.drag_pos[i]
+            return torch.cat([z_i[..., :e], d_i, z_i[..., e:]], dim=-1)
         nb = w_nb = None
         if self.neighbor_features is not None:
             if x is None or u_prev is None:
@@ -140,6 +169,7 @@ class DistributedOperator(OperatorBase):
                 z_ag = nb_ag if z_ag is None else torch.cat([z_ag, nb_ag], dim=-1)
             if w_nb is not None:
                 w_ag = torch.cat([w_ag, torch.stack(w_nb, dim=2)], dim=-1)
+            z_ag = with_drag(z_ag, 0, d_ag)   # same position for every agent (equal sizes)
 
             # fold agents into the batch: (B, T, N, d) -> (B*N, T, d)
             def fold(x):
@@ -152,9 +182,9 @@ class DistributedOperator(OperatorBase):
 
             def z_of(i):
                 z_i = z_ag[:, :, i] if z_ag is not None else None
-                if nb is None:
-                    return z_i
-                return nb[i] if z_i is None else torch.cat([z_i, nb[i]], dim=-1)
+                if nb is not None:
+                    z_i = nb[i] if z_i is None else torch.cat([z_i, nb[i]], dim=-1)
+                return with_drag(z_i, i, None if d_ag is None else d_ag[:, :, i])
             if self.agent_batch is not None:
                 z_all = [z_of(i) for i in range(self.n_agents)]
                 z_all = None if z_all[0] is None else torch.stack(z_all)     # (N, B, T, dz)

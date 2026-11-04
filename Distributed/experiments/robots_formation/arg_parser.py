@@ -25,7 +25,7 @@ PRE_DATA_ARGS = dict(init_min_dist=0.0, resample_data=False)
 
 def saved_run_args(saved):
     """Args of a saved run, with what it trained with for the args added since it."""
-    return {'pad_agent_inputs': False, **PRE_STABILISER_ARGS, **PRE_DATA_ARGS, **saved}
+    return {'pad_agent_inputs': False, 'patches': False, **PRE_STABILISER_ARGS, **PRE_DATA_ARGS, **saved}
 
 
 # argument parser
@@ -48,6 +48,13 @@ def argument_parser(argv=None):
     parser.add_argument('--alpha-wall', type=float, default=0.0, help='Weight of the arena walls on x (--wall-x): time-averaged quadratic penalty, summed over the robots, from --wall-margin inside a wall on (1 on the wall, growing beyond). Keeps the robots from going around the obstacles. 0 disables it. Default is 0.')
     parser.add_argument('--wall-x', type=float, nargs=2, default=[-3.0, 7.0], metavar=('X_MIN', 'X_MAX'), help='x of the left and right arena walls. Default is -3 7 (the outer obstacle centres and the GIF frame).')
     parser.add_argument('--wall-margin', type=float, default=0.5, help='Distance inside each wall where the wall penalty starts. Default is 0.5.')
+    # sticky friction patches (context-aware ICI paper, Sec. 6.4)
+    parser.add_argument('--patches', action=bool_flag, default=False, help='Sticky friction patches: every rollout gets its own random layout of --patch-n Gaussian patches where the linear drag b is scaled by s(p) = 1 + sum_k w_k exp(-||p - c_k||^2 / (2 sigma_k^2)) (b2 untouched). The drag is measured: the nominal model of the controller uses it to reconstruct w, and the log of the local drag scale, log s(p^i_t), of every agent is appended to its context (not to the SSM input port: it depends on the state). Shown on the plots and GIFs. Default is False.')
+    parser.add_argument('--patch-n', type=int, default=3, help='Number of sticky patches per rollout. Default is 3.')
+    parser.add_argument('--patch-w', type=float, nargs=2, default=[2.0, 20.0], metavar=('W_MIN', 'W_MAX'), help='Range of the patch intensities w (uniform): the drag scale peaks at 1 + w in a patch centre and is 1 away from the patches. Default is 2 20 (peak scale 3 to 21; the paper uses 2 8).')
+    parser.add_argument('--patch-sigma', type=float, nargs=2, default=[0.25, 1.5], metavar=('S_MIN', 'S_MAX'), help='Range of the patch widths sigma (uniform). Default is 0.25 1.5.')
+    parser.add_argument('--patch-x', type=float, nargs=2, default=None, metavar=('X_MIN', 'X_MAX'), help='Range of the x of the patch centres (uniform). Default is None (--wall-x).')
+    parser.add_argument('--patch-y', type=float, nargs=2, default=[-1.0, 6.0], metavar=('Y_MIN', 'Y_MAX'), help='Range of the y of the patch centres (uniform). Default is -1 6 (from the start to the targets).')
     parser.add_argument('--formation-start', type=int, default=0, help='First time step penalised by the formation loss. Default is 0.')
     parser.add_argument('--target-x', type=float, nargs=2, default=[0.0, 4.0], metavar=('X_MIN', 'X_MAX'), help='Range of the x of the target centroids (uniform). Keep the widest target formation inside the arena walls (--wall-x). Default is 0 4.')
     parser.add_argument('--target-y', type=float, nargs=2, default=[6.0, 6.1], metavar=('Y_MIN', 'Y_MAX'), help='Range of the y of the target centroids (uniform); the verification targets are at Y_MIN. Raise it so the targets turned along y clear the obstacles. Default is 6 6.1.')
@@ -81,6 +88,15 @@ def argument_parser(argv=None):
         raise ValueError('--alpha-wall needs --wall-x X_MIN X_MAX with X_MIN < X_MAX and --wall-margin > 0.')
     if not 0 <= args.orient_margin <= 1:
         raise ValueError('--orient-margin must be in [0, 1].')
+    if args.patch_x is None:
+        args.patch_x = list(args.wall_x)
+    if args.patches:
+        if args.patch_n < 1:
+            raise ValueError('--patches needs --patch-n >= 1.')
+        if not (0 <= args.patch_w[0] <= args.patch_w[1] and 0 < args.patch_sigma[0] <= args.patch_sigma[1]):
+            raise ValueError('--patch-w needs 0 <= W_MIN <= W_MAX and --patch-sigma 0 < S_MIN <= S_MAX.')
+        if not (args.patch_x[0] <= args.patch_x[1] and args.patch_y[0] <= args.patch_y[1]):
+            raise ValueError('--patch-x and --patch-y need MIN <= MAX.')
     if args.formation_deadband < 0:
         raise ValueError('--formation-deadband must be >= 0.')
     if args.formation_shape == 'isosceles':
@@ -192,6 +208,9 @@ def print_args(args):
     if args.alpha_orient or args.alpha_orient_max:
         msg += ' -- alpha_orient: %g, alpha_orient_max: %g (margin %g)' % (
             args.alpha_orient, args.alpha_orient_max, args.orient_margin)
+    if getattr(args, 'patches', False):
+        msg += '\n[INFO] Sticky patches: %i per rollout -- w in [%g, %g] (peak drag scale 1 + w) -- sigma in [%g, %g] -- centres x in [%g, %g], y in [%g, %g] -- log drag scale in the context' % (
+            args.patch_n, *args.patch_w, *args.patch_sigma, *args.patch_x, *args.patch_y)
     if args.alpha_wall:
         msg += '\n[INFO] Arena walls: x in [%g, %g] -- alpha_wall: %g (margin %g)' % (
             args.wall_x[0], args.wall_x[1], args.alpha_wall, args.wall_margin)

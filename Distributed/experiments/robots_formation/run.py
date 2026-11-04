@@ -10,6 +10,7 @@ from Distributed.config import device
 from Distributed.experiments.robots_formation.arg_parser import argument_parser, print_args, training_state_path
 from Distributed.plants import RobotsSystem, RobotsFormationDataset
 from Distributed.plants.robots.formation_dataset import formation_state
+from Distributed.plants.robots.robots_sys import append_patches, sample_friction_patches
 from Distributed.utils.plot_functions import *
 from Distributed.controllers import build_controller, agent_operators, ssm_core_parameters
 from Distributed.controllers.interconnection import adjacency_folder, make_adjacency
@@ -52,6 +53,49 @@ def make_dataset(args):
     )
 
 
+def make_plant(args):
+    """Plant of the parsed args: with --patches, sticky friction patches (runs saved before them: none)."""
+    return RobotsSystem(
+        x_init=None,       # same as xbar
+        u_init=None,       # all zero
+        linear_plant=args.linearize_plant,
+        k=args.spring_const,
+        n_agents=args.n_agents,
+        n_patches=args.patch_n if getattr(args, 'patches', False) else 0,
+    )
+
+
+def sample_patches(args, num_samples, seed):
+    """Sticky patch layouts of --patch-* (num_samples, 4 * patch_n), drawn from a generator of their own."""
+    return sample_friction_patches(
+        num_samples, n_patches=args.patch_n, x_range=tuple(args.patch_x or args.wall_x), y_range=tuple(args.patch_y),
+        w_range=tuple(args.patch_w), sigma_range=tuple(args.patch_sigma),
+        generator=torch.Generator().manual_seed(int(seed)),
+    )
+
+
+def with_patches(args, data, seed):
+    """data with its own sticky patch layout per rollout (seeded) appended with --patches, else unchanged.
+    The patches are drawn from generators of their own: the rollouts and the global RNG are unchanged."""
+    if not getattr(args, 'patches', False):
+        return data
+    return append_patches(data, sample_patches(args, data.shape[0], seed))
+
+
+def get_data(args, dataset):
+    """Train (also the validation set) and test data of the parsed args, with their sticky patches if any."""
+    train_data, test_data = dataset.get_data(num_train_samples=args.num_rollouts, num_test_samples=500)
+    return (with_patches(args, train_data, args.random_seed + 6),
+            with_patches(args, test_data, args.random_seed + 7))
+
+
+def verification_patches(args, num_scenarios):
+    """One sticky patch layout per verification scenario (fixed by --random-seed), None without --patches."""
+    if not getattr(args, 'patches', False):
+        return None
+    return sample_patches(args, num_scenarios, args.random_seed + 8)
+
+
 def formation_scenarios(dataset):
     """Verification scenarios: name -> reference state of the target formation."""
     theta0, y = dataset.start_theta, dataset.target_y[0]
@@ -81,15 +125,19 @@ def formation_scenarios(dataset):
     }
 
 
-def verification_data(dataset, scenarios, horizon):
+def verification_data(dataset, scenarios, horizon, patches=None):
     """Rollouts of the verification scenarios: start x0, constant target formation. With flipped starts in
     the data (start_flip_frac or test_start_flip_frac), each scenario again with its start and target
-    turned by pi (dataset.flip_starts), named '<scenario>_fs'. Returns the names and the data (K, horizon + 200, 2 state_dim)."""
+    turned by pi (dataset.flip_starts), named '<scenario>_fs', on the same sticky patches.
+    patches: optional sticky patch layout of every scenario (K, 4 * n_patches), see verification_patches.
+    Returns the names and the data (K, horizon + 200, 2 state_dim [+ 4 n_patches])."""
     sd = 4 * dataset.n_agents
     data = torch.zeros(len(scenarios), horizon + 200, 2 * sd)
     data[:, 0, :sd] = dataset.x0
     for k, xbar_k in enumerate(scenarios.values()):
         data[k, 1:, sd:] = xbar_k
+    if patches is not None:
+        data = append_patches(data, patches)
     names = list(scenarios)
     if dataset.start_flip_frac or dataset.test_start_flip_frac:
         data = torch.cat([data, dataset.flip_starts(data, torch.ones(len(names), dtype=torch.bool))])
@@ -181,16 +229,17 @@ def gif_lims(xbar):
 
 
 def save_scenario_gif(x, xbar, name, stage, n_agents, gif_folder, horizon, interval,
-                      obstacle_centers, obstacle_covs, formation_pairs, min_dist=None):
+                      obstacle_centers, obstacle_covs, formation_pairs, min_dist=None, patches=None):
     """Frames of one closed-loop trajectory in gifs/frames_<name>_<stage>/ and gifs/CL_<name>_<stage>.gif.
-    Robots are drawn with radius min_dist / 2 (collision when the discs overlap); None: radius 0.5."""
+    Robots are drawn with radius min_dist / 2 (collision when the discs overlap); None: radius 0.5.
+    patches: optional sticky patch layout of the rollout, shaded on every frame."""
     min_dist = 1.0 if min_dist is None else float(min_dist)
     frame_folder = os.path.join(gif_folder, 'frames_%s_%s' % (name, stage))
     save_trajectory_frames(
         x, xbar, n_agents=n_agents, save_folder=frame_folder, T=horizon, interval=interval,
         obstacle_centers=obstacle_centers, obstacle_covs=obstacle_covs,
         formation_pairs=formation_pairs, lims=gif_lims(xbar),
-        robot_radius=min_dist / 2, collision_dist=min_dist,
+        robot_radius=min_dist / 2, collision_dist=min_dist, patches=patches,
     )
     create_gif_from_frames(frame_folder, os.path.join(gif_folder, 'CL_%s_%s.gif' % (name, stage)))
 
@@ -278,7 +327,7 @@ def main():
     # To disable obstacle loss entirely, pass `--no-obst-av` (recommended) rather than overriding here.
 
 # divide to train and test
-    train_data, test_data = dataset.get_data(num_train_samples=args.num_rollouts, num_test_samples=500)
+    train_data, test_data = get_data(args, dataset)     # with their sticky patches (--patches)
     train_data, test_data = train_data.to(device), test_data.to(device)
     if getattr(args, 'init_seed', None) is not None:
         torch.manual_seed(args.init_seed)    # model initialisation and batch shuffling, on the data of --random-seed
@@ -296,15 +345,7 @@ def main():
     train_dataloader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
 # ------------ 2. Plant ------------
-    plant_input_init = None     # all zero
-    plant_state_init = None    # same as xbar
-    sys = RobotsSystem(
-        x_init=plant_state_init,
-        u_init=plant_input_init,
-        linear_plant=args.linearize_plant,
-        k=args.spring_const,
-        n_agents=n_agents,
-    ).to(device)
+    sys = make_plant(args).to(device)     # with --patches: sticky friction patches, drag scale in the context
 
 
 # ------------ 3. Controller ------------
@@ -315,7 +356,7 @@ def main():
 
 # ------------ 4. Loss ------------
     Q = args.alpha_x * torch.kron(torch.eye(args.n_agents), torch.eye(2)).to(device)    # saved with the trained model
-    loss_fn = make_loss_fn(args, dataset, xbar=train_data[0, :, state_dim:])
+    loss_fn = make_loss_fn(args, dataset, xbar=train_data[0, :, state_dim:2 * state_dim])
     # pairs drawn in the plots: the shape's own segments if it has them, else the constrained pairs (i < j)
     formation_pairs = dataset.plot_edges or loss_fn.formation_edges.nonzero().tolist()
 
@@ -373,7 +414,9 @@ def main():
 # plot the baseline: closed loop with the operator shut to zero (u = 0), the inner PI loop alone
     logger.info('Plotting closed-loop trajectories of the baseline without the operator (u = 0)...')
 
-    verif_names, data_verif = verification_data(dataset, scenarios, args.horizon)
+    verif_names, data_verif = verification_data(dataset, scenarios, args.horizon,
+                                                patches=verification_patches(args, len(scenarios)))
+    patches_of = lambda data, k: data[k, 0, 2 * state_dim:] if sys.n_patches else None   # layout of rollout k
     data_verif = data_verif.to(device)
 
     x_verif, _, _ = sys.rollout(ZeroOperatorController(sys.in_dim), data_verif)
@@ -393,7 +436,7 @@ def main():
         for k, name in enumerate(verif_names):
             plot_trajectories(
                 x_verif[k, :, :],  # remove extra dim due to batching
-                xbar=data_verif[k, 1, state_dim:],
+                xbar=data_verif[k, 1, state_dim:2 * state_dim],
                 n_agents=sys.n_agents,
                 save_folder=save_folder,
                 filename='CL_%s_%s.pdf' % (name, stage),
@@ -403,15 +446,16 @@ def main():
                 obstacle_covs=loss_fn.obstacle_covs,
                 formation_pairs=formation_pairs,
                 formation_every=max(1, args.horizon // 5),
+                patches=patches_of(data_verif, k),
             )
 
     def save_gifs(x_verif, stage):
         for k, name in enumerate(verif_names):
             save_scenario_gif(
-                x_verif[k], data_verif[k, 1, state_dim:], name, stage, n_agents=sys.n_agents, gif_folder=save_folder_gif,
-                horizon=args.horizon, interval=args.gif_interval,
+                x_verif[k], data_verif[k, 1, state_dim:2 * state_dim], name, stage, n_agents=sys.n_agents,
+                gif_folder=save_folder_gif, horizon=args.horizon, interval=args.gif_interval,
                 obstacle_centers=loss_fn.obstacle_centers, obstacle_covs=loss_fn.obstacle_covs,
-                formation_pairs=formation_pairs, min_dist=args.min_dist,
+                formation_pairs=formation_pairs, min_dist=args.min_dist, patches=patches_of(data_verif, k),
             )
 
     plot_scenarios(x_verif, 'ref', "Baseline - operator off (u = 0)")
@@ -437,8 +481,8 @@ def main():
         if resample:
             # seeded by the epoch: a resumed run draws the same rollouts; apart from the generators of get_data
             g = torch.Generator().manual_seed(10000 * (args.random_seed + 3) + epoch)
-            train_dataloader = DataLoader(dataset.sample_train(args.num_rollouts, g).to(device),
-                                          batch_size=args.batch_size, shuffle=True)
+            fresh = with_patches(args, dataset.sample_train(args.num_rollouts, g), 2 * g.initial_seed() + 2)
+            train_dataloader = DataLoader(fresh.to(device), batch_size=args.batch_size, shuffle=True)
         # iterate over all data batches
         for step, train_data_batch in enumerate(train_dataloader):
             optimizer.zero_grad()
@@ -567,7 +611,7 @@ def main():
     x_log, _, u_log = rollout(ctl, plot_data)
     plot_trajectories(
         x_log[0, :, :],  # remove extra dim due to batching
-        xbar=plot_data[0, 5, state_dim:],
+        xbar=plot_data[0, 5, state_dim:2 * state_dim],
         n_agents=sys.n_agents,
         save_folder=save_folder,
         filename='CL_trained.pdf',
@@ -577,6 +621,7 @@ def main():
         obstacle_covs=loss_fn.obstacle_covs,
         formation_pairs=formation_pairs,
         formation_every=max(1, args.horizon // 5),
+        patches=patches_of(plot_data, 0),
     )
 
     x_verif, _, u_verif = rollout(ctl, data_verif)
@@ -616,6 +661,7 @@ def main():
         dots=True,
         obstacle_centers=loss_fn.obstacle_centers,
         obstacle_covs=loss_fn.obstacle_covs,
+        patches=patches_of(data_verif, 1),
     )
 
 

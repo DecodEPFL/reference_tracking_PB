@@ -26,18 +26,65 @@ def plot_formation_edges(ax, x, t, formation_pairs, **kwargs):
         )
 
 
+def drag_field(patches, lims, n=200):
+    """Drag scale s(p) = 1 + sum_k w_k exp(-||p - c_k||^2 / (2 sigma_k^2)) of a sticky patch layout
+    (tensor of 4 * n_patches entries (cx, cy, w, sigma), or (n_patches, 4)) on an n x n grid over
+    lims = (xmin, xmax, ymin, ymax). Returns the numpy grids xx, yy, s."""
+    pt = torch.as_tensor(patches).detach().cpu().double().reshape(-1, 4).numpy()
+    xx, yy = np.meshgrid(np.linspace(lims[0], lims[1], n), np.linspace(lims[2], lims[3], n))
+    s = np.ones_like(xx)
+    for cx, cy, w, sigma in pt:
+        s += w * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma ** 2))
+    return xx, yy, s
+
+
+def plot_drag_patches(ax, patches, lims, s_max=None, colorbar=True):
+    """Shade the sticky patches of a layout (see drag_field) on ax, from s = 1.25 up to s_max
+    (default: the peak of the layout), with a colorbar of the drag scale."""
+    xx, yy, s = drag_field(patches, lims)
+    top = max(float(s.max()), 1.5) if s_max is None else float(s_max)
+    levels = np.linspace(1.25, max(top, 1.5), 9)
+    cs = ax.contourf(xx, yy, np.clip(s, None, levels[-1]), levels=levels, cmap='YlOrBr', alpha=0.45, zorder=1,
+                     extend='neither')
+    ax.contour(xx, yy, s, levels=[1.25], colors='saddlebrown', linewidths=0.5, alpha=0.6, zorder=1)
+    if colorbar:
+        cb = ax.figure.colorbar(cs, ax=ax, fraction=0.046, pad=0.04, format='%.1f')
+        cb.ax.set_title('drag', fontsize=9)    # a side label would be cut off the fixed-size frames
+    return cs
+
+
+def draw_obstacles(ax, xx, yy, zz, z_min, z_max, transparent=False):
+    """Obstacle background (Gaussian densities zz on the grid xx, yy, indexed [x, y]) in greys.
+    transparent=True (sticky patches drawn behind): black with the opacity that gives the same grey over a
+    white background, fully transparent away from the obstacles; drawn as a smoothly interpolated image,
+    which keeps its transparency in PDFs too (gouraud shading does not)."""
+    if not transparent:
+        ax.pcolormesh(xx, yy, zz, cmap='Greys', vmin=z_min, vmax=z_max, shading='gouraud')
+        return
+    from matplotlib.colors import ListedColormap
+    colors = np.zeros((256, 4))
+    colors[:, 3] = 1.0 - plt.get_cmap('Greys')(np.linspace(0, 1, 256))[:, 0]   # grey g over white = black at 1 - g
+    ax.imshow(zz.T, origin='lower', extent=(xx.min(), xx.max(), yy.min(), yy.max()), aspect='auto',
+              cmap=ListedColormap(colors), vmin=z_min, vmax=z_max, interpolation='bilinear', zorder=1)
+
+
 def plot_trajectories(
     x, xbar, n_agents, save_folder, text="", save=True, filename='', T=100,
     dots=False, circles=False, axis=True, min_dist=1, f=5,
     obstacle_centers=None, obstacle_covs=None,
-    formation_pairs=None, formation_every=None,
+    formation_pairs=None, formation_every=None, patches=None,
 ):
     """formation_pairs: optional list of agent pairs (i, j) whose segments are drawn
-    every formation_every steps up to T (default: at 0 and T only)."""
+    every formation_every steps up to T (default: at 0 and T only).
+    patches: optional sticky patch layout of the rollout (see drag_field), shaded over the arena."""
     filename = 'trajectories.pdf' if filename == '' else filename
 
     # fig = plt.figure(f)
     fig, ax = plt.subplots(figsize=(f,f))
+    # sticky patches behind the obstacles
+    if patches is not None:
+        top = max(x.reshape(-1, 4)[:, 1].max().item(), xbar.reshape(-1, 4)[:, 1].max().item())
+        plot_drag_patches(ax, patches, (-3, 7, -3, min(15.0, max(7.0, top + 1))))
     # plot obstacles
     if not obstacle_covs is None:
         assert not obstacle_centers is None
@@ -56,7 +103,7 @@ def plot_trajectories(
                     zz[i, j] += distr.pdf([xx[i, j], yy[i, j]])
         z_min, z_max = np.abs(zz).min(), np.abs(zz).max()
 
-        ax.pcolormesh(xx, yy, zz, cmap='Greys', vmin=z_min, vmax=z_max, shading='gouraud')
+        draw_obstacles(ax, xx, yy, zz, z_min, z_max, transparent=patches is not None)
 
     ax.set_title(text)
     for i in range(n_agents):
@@ -155,11 +202,12 @@ def plot_traj_vs_time(t_end, n_agents, save_folder, x, u=None, text="", save=Tru
 
 
 def save_trajectory_frames(x, xbar, n_agents, save_folder, T=100, interval=1,f=5, obstacle_centers=None, obstacle_covs=None,
-                           formation_pairs=None, lims=None, robot_radius=0.5, collision_dist=1.0):
+                           formation_pairs=None, lims=None, robot_radius=0.5, collision_dist=1.0, patches=None):
     """formation_pairs: optional list of agent pairs (i, j) whose current segments are drawn on every frame
     (and dashed at the target). lims: optional fixed (xmin, xmax, ymin, ymax) of every frame.
     robot_radius: radius of the disc drawn for each robot; collision_dist: centre distance below which
-    the frame is titled 'Collision' (the loss' min_dist, i.e. 2 * robot_radius)."""
+    the frame is titled 'Collision' (the loss' min_dist, i.e. 2 * robot_radius).
+    patches: optional sticky patch layout of the rollout (see drag_field), shaded on every frame."""
     os.makedirs(save_folder, exist_ok=True)
 
     # obstacle background, computed once and redrawn on every frame
@@ -181,8 +229,11 @@ def save_trajectory_frames(x, xbar, n_agents, save_folder, T=100, interval=1,f=5
         print(f'\rSaving frames of {os.path.basename(save_folder)}: {t}/{T}', end='', flush=True)
         fig, ax = plt.subplots(figsize=(f,f))
         # plot obstacles
+        # sticky patches behind the obstacles
+        if patches is not None:
+            plot_drag_patches(ax, patches, lims if lims is not None else (-3, 7, -3, 7))
         if not obstacle_covs is None:
-            ax.pcolormesh(xx, yy, zz, cmap='Greys', vmin=z_min, vmax=z_max, shading='gouraud')
+            draw_obstacles(ax, xx, yy, zz, z_min, z_max, transparent=patches is not None)
         for i in range(n_agents):
             ax.plot(
                 x[:t+1, 4*i].detach().cpu(), x[:t+1, 4*i+1].detach().cpu(),

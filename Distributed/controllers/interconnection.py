@@ -203,6 +203,9 @@ class RelayFeatures(nn.Module):
         context:                  z^j_{t-d},  p^j_{t-d} - p^i_{t-d}  (, u^j_{t-e} with --relay-inputs)
     where the context lists the targets of all sources first, then the offsets, then the inputs, so
     that [z^i, targets of the sources] is a prefix (only exogenous signals drive the SSM input port).
+    With sticky patches (drag_idx: the channels of z holding the measured drag of every agent) every
+    source also sends its measured drag, relayed like its position (s^j_{t-d}), listed right after the
+    targets: [targets, drags, offsets, inputs].
     The offset is formed at agent i from the relayed position and its own position at the same step.
     A message sent at step s carries u^j_s, so e = d; with hop_delay = 0 (instant sharing) u^j_t is
     not computed yet and e = 1.
@@ -212,16 +215,17 @@ class RelayFeatures(nn.Module):
     otherwise reach a gain above one through the context heads.
 
     Before anything arrives (t < d) the disturbances and inputs are zero (a delay started at rest,
-    so w^j_0 = x^j_0 is not injected twice) and the positions and targets hold their values at t = 0
+    so w^j_0 = x^j_0 is not injected twice) and the positions, targets and drags hold their values at t = 0
     (the initial configuration is known). The history is kept across calls and cleared by reset().
 
     With pad=True every agent gets the slots of the agent with the most sources, each group
-    (disturbances; targets, offsets, inputs) padded with zeros at its end, so the prefixes above hold.
+    (disturbances; targets, drags, offsets, inputs) padded with zeros at its end, so the prefixes above hold.
     """
 
     def __init__(self, adjacency: torch.Tensor, pos_idx: Sequence[Sequence[int]], w_idx: Sequence[Sequence[int]],
                  ref_idx: Sequence[Sequence[int]], u_idx: Optional[Sequence[Sequence[int]]] = None, hop_delay: int = 1,
-                 input_scale: float = 1.0, max_hops: Optional[int] = None, pad: bool = False):
+                 input_scale: float = 1.0, max_hops: Optional[int] = None, pad: bool = False,
+                 drag_idx: Optional[Sequence[Sequence[int]]] = None):
         super().__init__()
         if hop_delay < 0:
             raise ValueError("hop_delay must be >= 0.")
@@ -238,16 +242,19 @@ class RelayFeatures(nn.Module):
         self.input_scale = float(input_scale)
         dw, dz, dp = len(w_idx[0]), len(ref_idx[0]), len(pos_idx[0])
         du = len(u_idx[0]) if self.sends_inputs else 0
-        self.group_dims = {"w": dw, "z": dz, "p": dp, "u": du}
+        self.sends_drag = drag_idx is not None
+        ds = len(drag_idx[0]) if self.sends_drag else 0
+        self.group_dims = {"w": dw, "z": dz, "s": ds, "p": dp, "u": du}
         slots = max(len(src) for src in self.sources)
         self.slots = [slots if pad else len(src) for src in self.sources]
         self.w_out_dims = [k * dw for k in self.slots]
         self.target_dims = [k * dz for k in self.slots]
-        self.out_dims = [k * (dz + dp + du) for k in self.slots]
+        self.drag_dims = [k * ds for k in self.slots]
+        self.out_dims = [k * (dz + ds + dp + du) for k in self.slots]
         self.input_dims = [k * du for k in self.slots]                     # the last channels of the context
         group = lambda d, real, k: [1.0] * real * d + [0.0] * (k - real) * d
         self.w_masks = [group(dw, len(src), k) for src, k in zip(self.sources, self.slots)]
-        self.context_masks = [group(dz, len(src), k) + group(dp, len(src), k) + group(du, len(src), k)
+        self.context_masks = [group(dz, len(src), k) + group(ds, len(src), k) + group(dp, len(src), k) + group(du, len(src), k)
                               for src, k in zip(self.sources, self.slots)]
         # steps of history needed: d for w, z, p; e - 1 <= d for the inputs (u_prev holds u_{t-1})
         self.memory = max((d for ds in self.delays for d in ds), default=0)
@@ -256,6 +263,8 @@ class RelayFeatures(nn.Module):
         self.register_buffer("ref_idx", torch.as_tensor(ref_idx, dtype=torch.long), persistent=False)
         if self.sends_inputs:
             self.register_buffer("u_idx", torch.as_tensor(u_idx, dtype=torch.long), persistent=False)
+        if self.sends_drag:
+            self.register_buffer("drag_idx", torch.as_tensor(drag_idx, dtype=torch.long), persistent=False)
         self._hist: Optional[dict[str, torch.Tensor]] = None
 
     def reset(self) -> None:
@@ -271,10 +280,12 @@ class RelayFeatures(nn.Module):
         cur = {"p": x_t[..., self.pos_idx], "w": w_t[..., self.w_idx], "z": z_t[..., self.ref_idx]}   # (B, T, N, ·)
         if self.sends_inputs:
             cur["u"] = self.input_scale * u_tm1[..., self.u_idx]
+        if self.sends_drag:
+            cur["s"] = z_t[..., self.drag_idx]
         T = x_t.shape[1]
         if self._hist is None:
             pad = lambda v, hold: (v[:, :1] if hold else torch.zeros_like(v[:, :1])).expand(-1, self.memory, -1, -1)
-            self._hist = {k: pad(v, hold=k in ("p", "z")) for k, v in cur.items()}
+            self._hist = {k: pad(v, hold=k in ("p", "z", "s")) for k, v in cur.items()}
         seq = {k: torch.cat([self._hist[k], v], dim=1) for k, v in cur.items()}
         L = T + self.memory
         at = lambda k, d: seq[k][:, L - T - d:L - d]                 # signal k delayed by d steps
@@ -283,15 +294,18 @@ class RelayFeatures(nn.Module):
         for i, (src, delays) in enumerate(zip(self.sources, self.delays)):
             # zero slots closing each group (pad=True), none otherwise
             pad = lambda g: [x_t.new_zeros(*x_t.shape[:2], (self.slots[i] - len(src)) * self.group_dims[g])]
-            ws, zs, offs, us = [], [], [], []
+            ws, zs, ss, offs, us = [], [], [], [], []
             for j, d in zip(src, delays):
                 ws.append(at("w", d)[:, :, j])
                 zs.append(at("z", d)[:, :, j])
+                if self.sends_drag:
+                    ss.append(at("s", d)[:, :, j])
                 p = at("p", d)
                 offs.append(p[:, :, j] - p[:, :, i])
                 if self.sends_inputs:
                     us.append(at("u", max(d, 1) - 1)[:, :, j])    # u^j_{t-e} = u_prev of step t-e+1
             w_extra.append(torch.cat(ws + pad("w"), dim=-1))
-            ctx.append(torch.cat(zs + pad("z") + offs + pad("p") + us + pad("u"), dim=-1))
+            drags = ss + pad("s") if self.sends_drag else []
+            ctx.append(torch.cat(zs + pad("z") + drags + offs + pad("p") + us + pad("u"), dim=-1))
         self._hist = {k: v[:, L - self.memory:] for k, v in seq.items()}
         return w_extra, ctx

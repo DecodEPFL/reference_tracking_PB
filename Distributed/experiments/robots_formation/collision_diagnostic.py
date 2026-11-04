@@ -21,7 +21,7 @@ sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from Distributed.config import device
 from Distributed.experiments.robots_formation.arg_parser import argument_parser, saved_run_args
-from Distributed.experiments.robots_formation.run import make_dataset, make_loss_fn
+from Distributed.experiments.robots_formation.run import get_data, make_dataset, make_loss_fn, make_plant
 from Distributed.plants import RobotsSystem
 from Distributed.controllers import build_controller
 
@@ -36,8 +36,7 @@ def load_run(folder, compile_):
     args = argparse.Namespace(**{**vars(argument_parser([])), **saved_run_args(ckpt['args'])})
     if compile_ is not None:
         args.compile = compile_
-    plant = RobotsSystem(x_init=None, u_init=None, linear_plant=args.linearize_plant,
-                         k=args.spring_const, n_agents=args.n_agents).to(device)
+    plant = make_plant(args).to(device)    # with the sticky patches of the run, if any
     ctl = build_controller(args, plant=plant).to(device)
     ctl.load_state_dict(ckpt['controller'])
     return args, plant, ctl
@@ -127,25 +126,27 @@ def main():
         name = os.path.basename(os.path.abspath(folder.rstrip('/')))
         args, plant, ctl = load_run(folder, opts.compile)
         key = (args.random_seed, args.num_rollouts, args.horizon, args.n_agents, args.formation_shape,
-               args.large_rot_frac, args.init_min_dist, args.start_flip_frac, args.test_start_flip_frac)
+               args.large_rot_frac, args.init_min_dist, args.start_flip_frac, args.test_start_flip_frac,
+               (args.patch_n, *args.patch_w, *args.patch_sigma, *(args.patch_x or args.wall_x), *args.patch_y)
+               if args.patches else None)
         if data_key is not None and key != data_key:
             sys.exit('%s was trained on other data (seed, rollouts, horizon, agents, shape, large-rot, init-min-dist, '
-                     'start flips): %s vs %s'
+                     'start flips, sticky patches): %s vs %s'
                      % (name, key, data_key))
         if dataset is None:
             data_key, dataset = key, make_dataset(args)
-            train_data, test_data = dataset.get_data(num_train_samples=args.num_rollouts, num_test_samples=500)
+            train_data, test_data = get_data(args, dataset)     # with their sticky patches, if any
             train_data, test_data = train_data.to(device), test_data.to(device)
             sd = 4 * args.n_agents
             # rotations relative to the start of each rollout (flipped starts: start_theta + pi)
             flipped = {s: dataset.flipped_starts(d).cpu() for s, d in (('train', train_data), ('test', test_data))}
-            pose = {s: target_pose(d[:, 1, sd:].cpu(), dataset.offsets, dataset.start_theta + math.pi * flipped[s].float())
+            pose = {s: target_pose(d[:, 1, sd:2 * sd].cpu(), dataset.offsets, dataset.start_theta + math.pi * flipped[s].float())
                     for s, d in (('train', train_data), ('test', test_data))}
             feats = {s: coverage_features(*pose[s], dataset) for s in pose}
             nn_dist = torch.cdist(feats['test'], feats['train']).amin(1)       # (S_test,)
             x0 = torch.where(flipped['test'].view(-1, 1), dataset.x0_flipped, dataset.x0).to(device)
             noise = (test_data[:, 0, :sd] - x0).norm(dim=1).cpu()
-        loss_fn = make_loss_fn(args, dataset, xbar=train_data[0, :, 4 * args.n_agents:])
+        loss_fn = make_loss_fn(args, dataset, xbar=train_data[0, :, 4 * args.n_agents:8 * args.n_agents])
         res = {s: per_rollout(args, plant, ctl, loss_fn, d) for s, d in (('train', train_data), ('test', test_data))}
         results[name] = res
 
