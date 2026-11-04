@@ -49,6 +49,7 @@ from Distributed.controllers.contractive_ren import ContractiveREN
 from Distributed.controllers.distributed import DistributedOperator
 from Distributed.controllers.interconnection import NeighborFeatures, PairOffsetFeatures, RelayFeatures, make_adjacency
 from Distributed.controllers.operators import FactorizedOperator, WIntegralAugmenter
+from Distributed.controllers.padding import mask_padded_inputs
 from Distributed.controllers.PB_controller import PBController
 from Distributed.controllers.ssm_operators import ContextRescale, MpContextualSSM, MpDeepSSM
 
@@ -268,56 +269,81 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
     w_idx = agent_channels(plant.state_idx, info_pattern, ego_first=args.share_weights)
     z_idx = agent_channels(plant.ref_idx, info_pattern, ego_first=args.share_weights)
     u_dim = plant.agent_in_dim
-    neighbors = None
-    if info_pattern == "neighbors":
-        adjacency = make_adjacency(getattr(args, "adjacency", "complete"), plant.n_agents)
-        # checkpoints saved before --neighbor-targets existed did not send the targets
-        ref_idx = plant.ref_idx if getattr(args, "neighbor_targets", False) else None
-        neighbors = NeighborFeatures(adjacency, pos_idx=plant.agent_pos_idx, u_idx=plant.input_idx, ref_idx=ref_idx)
-    elif info_pattern == "centralized":
-        # exactly the centralized controller's inputs: all of w, all targets, and the pair offsets
-        neighbors = PairOffsetFeatures(plant.agent_pos_idx)
-    elif info_pattern == "relay":
-        # the centralized inputs, relayed over the graph with one step of delay per hop
-        neighbors = RelayFeatures(make_adjacency(args.adjacency, plant.n_agents), pos_idx=plant.agent_pos_idx,
-                                  w_idx=plant.state_idx, ref_idx=plant.ref_idx,
-                                  u_idx=plant.input_idx if args.relay_inputs else None,
-                                  hop_delay=args.relay_hop_delay,
-                                  # checkpoints saved before --relay-inputs-scale existed were not scaled
-                                  input_scale=getattr(args, "relay_inputs_scale", 1.0),
-                                  max_hops=getattr(args, "relay_max_hops", 0) or None)   # 0: no limit
     n = plant.n_agents
     relay = info_pattern == "relay"
-    # input widths of each M^i: its own w and z channels plus what its neighbors send
-    w_dims = [len(w_idx[i]) + (neighbors.w_out_dims[i] if relay else 0) for i in range(n)]
-    z_dims = [len(z_idx[i]) + (neighbors.out_dims[i] if neighbors is not None else 0) for i in range(n)]
-    # neighbor signals computed from x and u (relative positions, inputs) would close a feedback
-    # loop around the plant through the SSM input port: only the targets z drive it (z^i, all of
-    # them under "centralized", z^i and the relayed targets under "relay")
-    input_z_dims = [None if neighbors is None else len(z_idx[i]) + (neighbors.target_dims[i] if relay else 0)
-                    for i in range(n)]
-    # relayed inputs kept out of the gate and select ports (mixers, mb) and of the SSM mixer port (mb),
-    # so they never reach the SSM state; checkpoints saved before --relay-inputs-to existed fed them to every port
-    route = getattr(args, "relay_inputs_to", "all") if relay else "all"
-    no_inputs = lambda i: z_dims[i] - neighbors.input_dims[i]
-    dynamics_z_dims = [no_inputs(i) if route in ("mixers", "mb") else None for i in range(n)]
-    mixer_z_dims = [no_inputs(i) if route == "mb" else None for i in range(n)]
+
+    def neighbor_features(pad=False):
+        if info_pattern == "neighbors":
+            adjacency = make_adjacency(getattr(args, "adjacency", "complete"), plant.n_agents)
+            # checkpoints saved before --neighbor-targets existed did not send the targets
+            ref_idx = plant.ref_idx if getattr(args, "neighbor_targets", False) else None
+            return NeighborFeatures(adjacency, pos_idx=plant.agent_pos_idx, u_idx=plant.input_idx, ref_idx=ref_idx, pad=pad)
+        if info_pattern == "centralized":
+            # exactly the centralized controller's inputs: all of w, all targets, and the pair offsets
+            return PairOffsetFeatures(plant.agent_pos_idx)
+        if info_pattern == "relay":
+            # the centralized inputs, relayed over the graph with one step of delay per hop
+            return RelayFeatures(make_adjacency(args.adjacency, plant.n_agents), pos_idx=plant.agent_pos_idx,
+                                 w_idx=plant.state_idx, ref_idx=plant.ref_idx,
+                                 u_idx=plant.input_idx if args.relay_inputs else None,
+                                 hop_delay=args.relay_hop_delay,
+                                 # checkpoints saved before --relay-inputs-scale existed were not scaled
+                                 input_scale=getattr(args, "relay_inputs_scale", 1.0),
+                                 max_hops=getattr(args, "relay_max_hops", 0) or None,   # 0: no limit
+                                 pad=pad)
+        return None
+
+    def input_dims(neighbors):
+        # input widths of each M^i: its own w and z channels plus what its neighbors send
+        w_dims = [len(w_idx[i]) + (neighbors.w_out_dims[i] if relay else 0) for i in range(n)]
+        z_dims = [len(z_idx[i]) + (neighbors.out_dims[i] if neighbors is not None else 0) for i in range(n)]
+        # neighbor signals computed from x and u (relative positions, inputs) would close a feedback
+        # loop around the plant through the SSM input port: only the targets z drive it (z^i, all of
+        # them under "centralized", z^i and the relayed targets under "relay")
+        input_z_dims = [None if neighbors is None else len(z_idx[i]) + (neighbors.target_dims[i] if relay else 0)
+                        for i in range(n)]
+        # relayed inputs kept out of the gate and select ports (mixers, mb) and of the SSM mixer port (mb),
+        # so they never reach the SSM state; checkpoints saved before --relay-inputs-to existed fed them to every port
+        route = getattr(args, "relay_inputs_to", "all") if relay else "all"
+        no_inputs = lambda i: z_dims[i] - neighbors.input_dims[i]
+        dynamics_z_dims = [no_inputs(i) if route in ("mixers", "mb") else None for i in range(n)]
+        mixer_z_dims = [no_inputs(i) if route == "mb" else None for i in range(n)]
+        return w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims
+
+    neighbors = neighbor_features()
+    w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims = input_dims(neighbors)
+    real_w_dims, real_z_dims = w_dims, z_dims
     if args.share_weights:
         if len(set(z_dims)) > 1 or len(set(w_dims)) > 1:
             raise ValueError("--share-weights needs every agent to have the same number of neighbors "
                              f"(context sizes {z_dims}); use --no-share-weights or a regular --adjacency graph.")
         w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims = (
             w_dims[:1], z_dims[:1], input_z_dims[:1], dynamics_z_dims[:1], mixer_z_dims[:1])
+    # unequal input sizes (agents hearing different numbers of neighbors) cannot be vmapped: zero-pad
+    # them to the largest, with the weights reading the padding masked (see padding.py); checkpoints
+    # saved before --pad-agent-inputs existed ran such agents unpadded, one by one
+    padded = (not args.share_weights and bool(getattr(args, "batch_agents", False))
+              and getattr(args, "pad_agent_inputs", False) and args.mp_type in ("ssm", "contextual_ssm")
+              and (len(set(w_dims)) > 1 or len(set(z_dims)) > 1))
+    if padded:
+        neighbors = neighbor_features(pad=True)
+        w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims = input_dims(neighbors)
     budget = None
     if len(z_dims) > 1 and getattr(args, "match_centralized_size", False):
         # under "centralized" and "relay" the reference M is the centralized one with pair features
         central_z_dim = (plant.in_dim + PairOffsetFeatures(plant.agent_pos_idx).out_dims[0]
                          if info_pattern in ("centralized", "relay") else None)
-        args, budget = match_centralized_size(args, plant, w_dims, z_dims, u_dim, central_z_dim)
+        # the real sizes: the padded columns are held at zero
+        args, budget = match_centralized_size(args, plant, real_w_dims[:len(z_dims)], real_z_dims[:len(z_dims)],
+                                              u_dim, central_z_dim)
     agent_ops = [build_operator(args, w_dim=w_dim, z_dim=z_dim, u_dim=u_dim, input_z_dim=input_z_dim,
                                 dynamics_z_dim=dynamics_z_dim, mixer_z_dim=mixer_z_dim)
                  for w_dim, z_dim, input_z_dim, dynamics_z_dim, mixer_z_dim
                  in zip(w_dims, z_dims, input_z_dims, dynamics_z_dims, mixer_z_dims)]
+    if padded:
+        for i, op in enumerate(agent_ops):
+            mask_padded_inputs(op, w_keep=[1.0] * len(w_idx[i]) + (neighbors.w_masks[i] if relay else []),
+                               z_keep=[1.0] * len(z_idx[i]) + neighbors.context_masks[i])
     # one vmapped call for the N independent operators, if they support it and match the loop
     batch_agents = bool(getattr(args, "batch_agents", False)) and len(agent_ops) > 1
     if batch_agents and (len(set(w_dims)) > 1 or len(set(z_dims)) > 1):
@@ -333,6 +359,8 @@ def build_distributed_operator(args, plant) -> DistributedOperator:
                                    neighbor_features=neighbors, batch_agents=batch_agents,
                                    compile_agents=bool(getattr(args, "compile", False)))
     operator.param_budget = budget                                   # None unless size-matched
+    # padded sizes and real sizes of the M^i, if padded
+    operator.input_padding = (w_dims[0], z_dims[0], real_w_dims, real_z_dims) if padded else None
     operator.widths = {k: getattr(args, k, None) for k in WIDTH_ARGS}   # widths actually built
     return operator
 

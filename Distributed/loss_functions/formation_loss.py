@@ -9,7 +9,7 @@ class RobotsFormationLoss(RobotsLoss):
     def __init__(
         self, *args, formation_dist, alpha_form=None, formation_adjacency=None,
         formation_deadband=0.0, formation_start=0,
-        formation_offsets=None, alpha_orient=None, orient_margin=0.5, alpha_orient_max=None, **kwargs,
+        formation_offsets=None, orient_groups=None, alpha_orient=None, orient_margin=0.5, alpha_orient_max=None, **kwargs,
     ):
         """
         RobotsLoss plus a formation term on the inter-agent distances,
@@ -45,6 +45,8 @@ class RobotsFormationLoss(RobotsLoss):
             - formation_start: first time step where the formation is penalised.
             - formation_offsets: (n_agents, 2) positions of the formation, giving the reference
                 orientation (targets are rotations of it). Needed by the orientation term.
+            - orient_groups: optional lists of agents; the orientation triples are then only those within
+                one group (e.g. each bowtie of a double bowtie). None: every triple of the formation.
             - alpha_orient: weight of the orientation term. None or 0 disables it.
             - orient_margin: m in [0, 1], fraction of each triangle's area below which it is penalised.
             - alpha_orient_max: weight of the worst-step orientation term. None or 0 disables it.
@@ -74,7 +76,9 @@ class RobotsFormationLoss(RobotsLoss):
         if formation_offsets is not None:
             off = torch.as_tensor(formation_offsets, dtype=torch.float32)
             assert off.shape == (n, 2)
-            triples = torch.tensor(list(itertools.combinations(range(n), 3)), dtype=torch.long).view(-1, 3)
+            groups = [range(n)] if orient_groups is None else orient_groups
+            triples = sorted({t for g in groups for t in itertools.combinations(sorted(g), 3)})   # shared triples once
+            triples = torch.tensor(triples, dtype=torch.long).view(-1, 3)
             areas = signed_area(off[triples[:, 0]], off[triples[:, 1]], off[triples[:, 2]])
             keep = areas.abs() > 1e-6 * off.norm(dim=-1).max().clamp(min=1) ** 2
             self.orient_triples, self.orient_areas = triples[keep].to(device), areas[keep].to(device)

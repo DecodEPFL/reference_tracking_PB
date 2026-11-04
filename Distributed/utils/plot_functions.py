@@ -41,7 +41,10 @@ def plot_trajectories(
     # plot obstacles
     if not obstacle_covs is None:
         assert not obstacle_centers is None
-        yy, xx = np.meshgrid(np.linspace(-3, 7, 100), np.linspace(-3, 7, 100))
+        # background up to 1 above the highest robot or target (y in [7, 15])
+        top = max(x.reshape(-1, 4)[:, 1].max().item(), xbar.reshape(-1, 4)[:, 1].max().item())
+        y_max = min(15.0, max(7.0, top + 1))
+        yy, xx = np.meshgrid(np.linspace(-3, y_max, round(10 * (y_max + 3))), np.linspace(-3, 7, 100))
         zz = xx * 0
         for center, cov in zip(obstacle_centers, obstacle_covs):
             distr = multivariate_normal(
@@ -162,7 +165,8 @@ def save_trajectory_frames(x, xbar, n_agents, save_folder, T=100, interval=1,f=5
     # obstacle background, computed once and redrawn on every frame
     if not obstacle_covs is None:
         assert not obstacle_centers is None
-        yy, xx = np.meshgrid(np.linspace(-3, 7, 100), np.linspace(-3, 7, 100))
+        y_max = 7.0 if lims is None else max(7.0, lims[3])   # background over the whole frame
+        yy, xx = np.meshgrid(np.linspace(-3, y_max, round(10 * (y_max + 3))), np.linspace(-3, 7, 100))
         zz = xx * 0
         for center, cov in zip(obstacle_centers, obstacle_covs):
             distr = multivariate_normal(

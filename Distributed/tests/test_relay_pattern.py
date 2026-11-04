@@ -165,9 +165,11 @@ def test_zero_delay_on_the_complete_graph_gives_the_centralized_inputs():
 
 
 def test_unreachable_robots_are_not_heard_and_sizes_may_differ():
-    _, op = make(['--adjacency', '0,1,0;0,0,0;0,1,0', '--batch-agents'])
+    _, op = make(['--adjacency', '0,1,0;0,0,0;0,1,0', '--batch-agents', '--no-pad-agent-inputs'])
     assert op.neighbor_features.sources == [[1], [], [1]]
     assert op.agent_batch is None                               # unequal input sizes: per-agent loop
+    _, op = make(['--adjacency', '0,1,0;0,0,0;0,1,0', '--batch-agents'])
+    assert op.agent_batch is not None and op.input_padding[3] == [6, 2, 6]   # zero-padded (test_padded_agents.py)
     with pytest.raises(ValueError, match='same number of neighbors'):
         make(['--adjacency', '0,1,0;0,0,0;0,1,0', '--share-weights'])
 

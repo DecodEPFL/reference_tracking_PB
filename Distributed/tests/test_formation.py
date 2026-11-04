@@ -10,6 +10,7 @@ from Distributed.experiments.robots_formation.arg_parser import FORMATION_DEFAUL
 from Distributed.loss_functions import RobotsFormationLoss
 from Distributed.plants import RobotsFormationDataset
 from Distributed.plants.robots.formation_dataset import (desired_distances, formation_offsets, isosceles_offsets, bowtie_offsets,
+                                                          double_bowtie_offsets,
                                                           formation_state)
 
 
@@ -318,3 +319,142 @@ def test_bowtie_formation():
     with pytest.raises(ValueError):
         argument_parser(['--formation-shape', 'bowtie', '--n-agents', '3'])
     assert 'bowtie' in print_args(argument_parser(['--formation-shape', 'bowtie', '--n-agents', '5']))
+
+
+def test_double_bowtie_formation():
+    off = double_bowtie_offsets(6.0, 1.2)
+    assert off.shape == (8, 2) and torch.allclose(off.mean(0), torch.zeros(2), atol=1e-6)
+    assert torch.allclose(off[6] - off[0], torch.tensor([6.0, 0.0]))       # total width along x
+    assert torch.allclose(off[3] - off[4], torch.tensor([0.0, 1.2]))       # shared middle column
+    # each half is a bowtie of width 3 around its knot, the middle column a corner of both
+    assert torch.allclose(off[[0, 1, 4, 3]] - off[2], bowtie_offsets(3.0, 1.2)[1:])
+    assert torch.allclose(off[[3, 4, 7, 6]] - off[5], bowtie_offsets(3.0, 1.2)[1:])
+    assert torch.pdist(off).min() == pytest.approx(1.2)                  # no closer than the 5-robot bowtie
+    ds = RobotsFormationDataset(random_seed=0, horizon=5, n_agents=8, std_ini=0.0, shape='double_bowtie', base=6.0,
+                                height=1.2, target_x=(1.0, 3.0), target_y=(7.0, 7.1))
+    # orientation: the 8 triangles of each bowtie, not the triples spanning both
+    loss = make_loss(n=8, formation_offsets=ds.offsets, orient_groups=ds.orient_groups, alpha_orient=1.0)
+    assert len(loss.orient_triples) == 16
+    # drawn segments: outer rectangle (6, top and bottom split at the middle) + middle side + 4 per knot
+    assert len(ds.plot_edges) == 15 and all(ds.distances[i, j] > 0 for i, j in ds.plot_edges)
+    assert len(make_loss(n=8, formation_offsets=ds.offsets, alpha_orient=1.0).orient_triples) == 50
+    xt = ds._generate_data(16)[:, 1, 32:]
+    pt = positions(xt)
+    assert torch.allclose(torch.cdist(pt, pt), ds.distances.expand(16, 8, 8), atol=1e-4)
+    centre = pt.mean(1)
+    assert ((1.0 <= centre[:, 0] + 1e-5) & (centre[:, 0] <= 3.0 + 1e-5) & (7.0 <= centre[:, 1] + 1e-5)).all()
+    with pytest.raises(ValueError):
+        RobotsFormationDataset(random_seed=0, horizon=5, n_agents=5, shape='double_bowtie', base=6.0, height=1.2)
+    with pytest.raises(ValueError):
+        argument_parser(['--formation-shape', 'double_bowtie', '--n-agents', '5'])
+    args = argument_parser(['--formation-shape', 'double_bowtie', '--n-agents', '8', '--formation-base', '6',
+                            '--target-y', '7', '7.1'])
+    assert args.target_y == [7.0, 7.1] and 'double bowtie' in print_args(args)
+
+
+def _min_start_dist(data, n_agents):
+    pos = data[:, 0, :4 * n_agents].view(-1, n_agents, 4)[..., :2]
+    return (torch.cdist(pos, pos) + 1e9 * torch.eye(n_agents)).flatten(1).amin(1)
+
+
+def test_init_min_dist_gives_collision_free_starts():
+    kw = dict(random_seed=0, horizon=5, n_agents=5, shape='bowtie', base=4.0, height=1.2, std_ini=0.4, large_rot_frac=0.6)
+    loose = RobotsFormationDataset(**kw).get_data(500, 500)
+    tight = RobotsFormationDataset(**kw, init_min_dist=0.5).get_data(500, 500)
+    assert (_min_start_dist(loose[0], 5) < 0.5).any()
+    assert all((_min_start_dist(d, 5) >= 0.5).all() for d in tight)
+    with pytest.raises(RuntimeError):
+        RobotsFormationDataset(**{**kw, 'std_ini': 0.0}, init_min_dist=5.0).sample_initial_state()
+
+
+def test_init_min_dist_zero_draws_the_initial_state_as_before():
+    ds = RobotsFormationDataset(random_seed=0, horizon=5, n_agents=3, std_ini=0.2)
+    x = ds.sample_initial_state(generator=torch.Generator().manual_seed(3))
+    assert torch.equal(x, ds.x0 + 0.2 * torch.randn(ds.x0.shape, generator=torch.Generator().manual_seed(3)))
+
+
+def test_resampled_train_data_follows_its_generator():
+    ds = RobotsFormationDataset(random_seed=0, horizon=5, n_agents=3, large_rot_frac=0.5, init_min_dist=1.0)
+    draw = lambda seed: ds.sample_train(20, torch.Generator().manual_seed(seed))
+    assert torch.equal(draw(1), draw(1)) and not torch.equal(draw(1), draw(2))
+    assert draw(1).shape == ds.get_data(20, 20)[0].shape
+    assert (_min_start_dist(draw(1), 3) >= 1.0).all()
+
+
+def test_init_min_dist_and_resample_args():
+    from Distributed.experiments.robots_formation.arg_parser import saved_run_args
+    assert argument_parser(['--min-dist', '0.5']).init_min_dist == 0.5        # default: collision free start
+    assert argument_parser(['--no-col-av']).init_min_dist == 0.0
+    assert argument_parser(['--init-min-dist', '0.8']).init_min_dist == 0.8
+    assert not argument_parser([]).resample_data and argument_parser(['--resample-data']).resample_data
+    assert saved_run_args({})['init_min_dist'] == 0.0 and saved_run_args({})['resample_data'] is False   # runs saved before
+
+
+BOWTIE = dict(random_seed=5, horizon=6, n_agents=5, shape='bowtie', base=4.0, height=1.2, large_rot_frac=0.6, init_min_dist=0.5)
+
+
+def test_flipped_start_puts_the_left_corners_on_the_right():
+    ds = RobotsFormationDataset(**BOWTIE)
+    p0, p1 = positions(ds.x0), positions(ds.x0_flipped)
+    assert torch.allclose(p1[0], p0[0])                                   # knot: the centre
+    assert torch.allclose(p1[1], p0[3]) and torch.allclose(p1[2], p0[4])  # 1: bottom right, 2: top right
+    assert torch.allclose(p1[3], p0[1]) and torch.allclose(p1[4], p0[2])
+
+
+def test_start_flip_turns_some_rollouts_by_pi_and_leaves_the_others():
+    (a, at), (b, bt) = (RobotsFormationDataset(**BOWTIE, start_flip_frac=f).get_data(600, 500) for f in (0.0, 0.5))
+    ds = RobotsFormationDataset(**BOWTIE)
+    m, mt = ds.flipped_starts(b), ds.flipped_starts(bt)
+    assert not ds.flipped_starts(a).any() and 0.4 < m.float().mean() < 0.6 and 0.4 < mt.float().mean() < 0.6
+    assert torch.equal(a[~m], b[~m]) and torch.equal(at[~mt], bt[~mt])
+    assert torch.allclose(ds.flip_starts(a, m), b)
+    # the noisy start turned by pi: same pairwise distances (init_min_dist holds), velocities negated
+    pa, pb = positions(a[m, 0, :20]), positions(b[m, 0, :20])
+    assert torch.allclose(torch.cdist(pa, pa), torch.cdist(pb, pb), atol=1e-5)
+    assert torch.allclose(b[m, 0, 2:20:4], -a[m, 0, 2:20:4])
+    # the target turned by pi about its own centre: same centre, the same turn from the start
+    ta, tb = positions(a[m, 1:, 20:]), positions(b[m, 1:, 20:])
+    assert torch.allclose(ta.mean(-2), tb.mean(-2), atol=1e-5)
+    assert torch.allclose(tb - tb.mean(-2, keepdim=True), -(ta - ta.mean(-2, keepdim=True)), atol=1e-5)
+
+
+def test_test_start_flip_frac_flips_only_the_test_data():
+    a, at = RobotsFormationDataset(**BOWTIE).get_data(100, 100)
+    b, bt = RobotsFormationDataset(**BOWTIE, test_start_flip_frac=1.0).get_data(100, 100)
+    ds = RobotsFormationDataset(**BOWTIE)
+    assert torch.equal(a, b) and ds.flipped_starts(bt).all()
+    with pytest.raises(ValueError):
+        RobotsFormationDataset(**BOWTIE, start_flip_frac=1.5)
+
+
+def test_resampled_train_data_flips_its_starts():
+    draw = lambda frac, seed: RobotsFormationDataset(**BOWTIE, start_flip_frac=frac).sample_train(200, torch.Generator().manual_seed(seed))
+    ds = RobotsFormationDataset(**BOWTIE)
+    m = ds.flipped_starts(draw(0.5, 1))
+    assert 0.35 < m.float().mean() < 0.65 and torch.equal(draw(0.5, 1), draw(0.5, 1))
+    assert torch.equal(draw(0.0, 1)[~m], draw(0.5, 1)[~m])
+
+
+def test_start_flip_args():
+    from Distributed.experiments.robots_formation.arg_parser import saved_run_args
+    args = argument_parser([])
+    assert args.start_flip_frac == 0.0 and args.test_start_flip_frac == 0.0
+    args = argument_parser(['--start-flip-frac', '0.5'])
+    assert args.test_start_flip_frac == 0.5                                   # default: as the train data
+    assert argument_parser(['--test-start-flip-frac', '0.5']).start_flip_frac == 0.0
+    with pytest.raises(ValueError):
+        argument_parser(['--test-start-flip-frac', '2'])
+    assert 'starts turned by pi' in print_args(args)
+
+
+def test_verification_data_adds_the_flipped_scenarios():
+    from Distributed.experiments.robots_formation.run import formation_scenarios, verification_data
+    ds = RobotsFormationDataset(**BOWTIE)
+    names, data = verification_data(ds, formation_scenarios(ds), horizon=6)
+    assert names == ['direct', 'flip', 'offset'] and data.shape == (3, 206, 40)
+    ds = RobotsFormationDataset(**BOWTIE, test_start_flip_frac=0.5)
+    names, data = verification_data(ds, formation_scenarios(ds), horizon=6)
+    assert names == ['direct', 'flip', 'offset', 'direct_fs', 'flip_fs', 'offset_fs']
+    assert torch.equal(ds.flipped_starts(data), torch.tensor([False] * 3 + [True] * 3))
+    # direct with the flipped start: the target formation turned by pi too, i.e. the flip target
+    assert torch.allclose(data[3, 1:], data[1, 1:], atol=1e-5)

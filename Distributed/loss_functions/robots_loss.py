@@ -10,7 +10,7 @@ class RobotsLoss(LQLossFH):
         loss_bound=None, sat_bound=None,
         n_agents=2, min_dist=0.5,
         obstacle_centers=None, obstacle_covs=None, obstacle_radius=None,
-        obstacle_loss='gaussian',
+        obstacle_loss='gaussian', collision_loss='inverse',
         Q_final=None, final_start=150,
         legacy_speed_weight=False,
         alpha_wall=None, wall_x=None, wall_margin=0.5,
@@ -22,6 +22,8 @@ class RobotsLoss(LQLossFH):
                 gradient inside). None keeps the untruncated Gaussian. Required by the barrier.
             - obstacle_loss: 'gaussian' (pdf bump with obstacle_covs) or 'barrier'
                 ((R/d - 1)^2 inside radius R, see obstacle_barrier).
+            - collision_loss: 'inverse' (1/d^2 inside min_dist + 0.2, see f_loss_ca) or 'hinge'
+                (bounded gradient, equal to 'inverse' at d = min_dist).
             - alpha_obst_max: weight of the worst-step obstacle term, sum over agents of the max over
                 time of the obstacle penalty. Unlike the time-averaged term, it cannot be made cheap by
                 crossing an obstacle in a few fast steps. None or 0 disables it.
@@ -47,6 +49,9 @@ class RobotsLoss(LQLossFH):
         if obstacle_loss == 'barrier' and obstacle_radius is None:
             raise ValueError("the barrier obstacle loss needs an obstacle_radius")
         self.obstacle_loss = obstacle_loss
+        if collision_loss not in ('inverse', 'hinge'):
+            raise ValueError(f"collision_loss must be 'inverse' or 'hinge', got {collision_loss!r}")
+        self.collision_loss = collision_loss
         self.alpha_wall, self.wall_margin = alpha_wall, float(wall_margin)
         self.wall_x = None if wall_x is None else (float(wall_x[0]), float(wall_x[1]))
         if self.alpha_wall:
@@ -224,12 +229,23 @@ class RobotsLoss(LQLossFH):
 
         Return:
             - collision avoidance loss of shape (1, 1).
+
+        Per pair closer than s = min_dist + 0.2:
+            - inverse: 1 / d^2. Its gradient grows like 1 / d^3 (about 1e8 near contact), so a single
+                near-collision in a batch can throw the optimizer off.
+            - hinge: ((s - d) / 0.2)^2 / min_dist^2, 0 at s, 1 / min_dist^2 at d = min_dist (as inverse),
+                (s / 0.2)^2 / min_dist^2 at contact: bounded, continuous at s.
         """
         min_sec_dist = self.min_dist + 0.2
         # compute pairwise distances
         distance_sq = self.get_pairwise_distance_sq(x_batch)              # shape = (S, T, n_agents, n_agents)
         # compute and sum up loss when two agents are too close
-        loss_ca = (1/(distance_sq + 1e-3) * (distance_sq.detach() < (min_sec_dist ** 2)) * self.mask).sum((-1, -2))/2        # shape = (S, T)
+        if self.collision_loss == 'hinge':
+            distance = torch.sqrt(distance_sq + 1e-6)                     # finite gradient on the (masked) diagonal
+            pen = (torch.clamp(min_sec_dist - distance, min=0) / (min_sec_dist - self.min_dist)) ** 2 / self.min_dist ** 2
+        else:
+            pen = 1/(distance_sq + 1e-3) * (distance_sq.detach() < (min_sec_dist ** 2))
+        loss_ca = (pen * self.mask).sum((-1, -2))/2        # shape = (S, T)
         # average over time steps
         loss_ca = loss_ca.sum(1)/loss_ca.shape[1]
         # reshape to S,1,1

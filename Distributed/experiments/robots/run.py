@@ -15,6 +15,7 @@ from Distributed.controllers import build_controller, agent_operators, ssm_core_
 from Distributed.controllers.interconnection import adjacency_folder
 from Distributed.loss_functions import RobotsLoss
 from Distributed.utils.assistive_functions import WrapLogger
+from Distributed.utils.training import GradClipper, SpikeDiagnoser, WeightEMA, set_lr, term_grad_norms
 
 
 def main():
@@ -150,6 +151,7 @@ def main():
         obstacle_covs=obstacle_covs,
         obstacle_radius=args.obst_radius if args.obst_radius > 0 else None,
         obstacle_loss=args.obst_loss,
+        collision_loss=args.col_loss,
         Q_final=args.alpha_final * torch.kron(torch.eye(args.n_agents), torch.eye(2)).to(device) if args.alpha_final >= 0 else None,
         final_start=args.final_start,
         min_dist=args.min_dist if args.col_av else None,
@@ -170,6 +172,10 @@ def main():
          {'params': slow_params, 'lr': args.lr * args.lr_ratio}],
         weight_decay=1e-4,
     )
+    base_lrs = [args.lr, args.lr * args.lr_ratio]
+    clipper = GradClipper(args.grad_clip, args.grad_clip_rel)
+    diagnoser = SpikeDiagnoser(args.grad_diag) if getattr(args, 'grad_diag', 0.0) else None
+    ema = WeightEMA(ctl, args.ema_decay) if args.ema_decay else None
  
 # ------------ 6. Training ------------
 # plot closed-loop trajectories before training the controller
@@ -190,6 +196,9 @@ def main():
     logger.info(f"Number of parameters: {total_params} (M_p core: {sum(p.numel() for p in fast_params)})")
     if ctl.operator.param_budget is not None:
         logger.info(f"Matched to the centralized M ({ctl.operator.param_budget} parameters) with widths {ctl.operator.widths}")
+    if ctl.operator.input_padding is not None:
+        logger.info("Agent inputs zero-padded to w %i, z %i to batch the agents (real sizes w %s, z %s); "
+                    "the weights reading the padding are held at zero" % ctl.operator.input_padding)
     for i, op in enumerate(agent_operators(ctl.operator)):
         if hasattr(op.mp, 'gain_diagnostics') and args.ctx_gamma > 0:   # certified bound needs a prescribed gamma
             logger.info(f"Contextual M_p gain diagnostics ({'shared' if args.share_weights else f'agent {i}'}): {op.mp.gain_diagnostics()}")
@@ -235,8 +244,9 @@ def main():
     best_valid_loss = 1e6
     t = time.time()
     for epoch in range(1 + args.epochs):
+        set_lr(optimizer, base_lrs, epoch, args)
         # iterate over all data batches
-        for train_data_batch in train_dataloader:
+        for step, train_data_batch in enumerate(train_dataloader):
             optimizer.zero_grad()
             # simulate over horizon steps
             x_log, e_log, u_log = rollout(
@@ -246,7 +256,18 @@ def main():
             loss = loss_fn.forward(x_log, u_log, e_log)
             # take a step
             loss.backward()
-            optimizer.step()
+            stepped = clipper(ctl.parameters())       # False: non-finite gradient, step skipped
+            if diagnoser is not None and diagnoser.triggered(clipper):
+                # same batch, same weights: the rollout is deterministic, so these are the gradients of the spike
+                def spike_terms(batch=train_data_batch):
+                    x_d, e_d, u_d = rollout(controller=ctl, data=batch, train=True)
+                    return loss_fn.loss_terms(x_d, u_d, e_d)
+                term_norms = term_grad_norms(spike_terms, ctl.parameters())
+                logger.info(diagnoser.report(epoch, step, clipper, loss.item(), term_norms))
+            if stepped:
+                optimizer.step()
+                if ema is not None:
+                    ema.update(ctl)
 
         # print info
         if epoch % args.log_epoch == 0:
@@ -254,7 +275,8 @@ def main():
             terms = loss_fn.breakdown(x_log, u_log, e_log)   # last train batch; replaced by validation terms below
 
             if args.return_best:
-                # rollout the current controller on the valid data
+                # rollout the controller on the valid data, with the averaged weights if any
+                current_state = None if ema is None else ema.swap(ctl)
                 with torch.no_grad():
                     x_log_valid, e_log_valid, u_log_valid = rollout(
                         controller=ctl, data=valid_data, train=False,
@@ -268,15 +290,24 @@ def main():
                     best_valid_loss = loss_valid.item()
                     best_state = copy.deepcopy(ctl.state_dict())  # record state dict if best on valid
                     msg += ' (best so far)'
+                if ema is not None:
+                    msg += ' (EMA)'
+                    ctl.load_state_dict(current_state)
             duration = time.time() - t
             msg += ' ---||--- time: %.0f s' % (duration)
             msg += '\n    %s terms: %s' % ('validation' if args.return_best else 'train batch', loss_fn.format_breakdown(terms))
+            msg += clipper.summary() + ' -- lr: %.2e' % optimizer.param_groups[0]['lr']
+            clipper.reset_stats()
+            if diagnoser is not None:
+                diagnoser.reset_stats()
             logger.info(msg)
             t = time.time()
 
     # set to best seen during training
     if args.return_best:
         ctl.load_state_dict(best_state)
+    elif ema is not None:
+        ctl.load_state_dict(ema.state)
 
 # ------ 7. Save and evaluate the trained model ------
 # save

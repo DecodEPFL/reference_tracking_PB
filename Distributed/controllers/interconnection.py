@@ -19,6 +19,12 @@ h_ij hops, agent i receives at time t the centralized signals of agent j at time
     w^j_{t-h},  z^j_{t-h},  p^j_{t-h} - p^i_{t-h}  (, u^j_{t-h})
 
 (on the complete graph every agent is one hop away: the centralized inputs delayed by one step).
+
+With ``pad=True`` every agent gets as many neighbor (source) slots as the agent with the most,
+the missing ones filled with zeros, so that all agents have the same input sizes and can run
+in one vmapped call (``AgentBatch``). ``w_masks`` and ``context_masks`` mark the real (1) and
+padded (0) channels of each agent's output; the agent operators keep the weights reading the
+padded channels at zero (``padding.mask_padded_inputs``).
 """
 
 from __future__ import annotations
@@ -100,16 +106,21 @@ class NeighborFeatures(nn.Module):
         pos_idx: per-agent position channels in x (each of length 2).
         u_idx: per-agent input channels in u.
         ref_idx: optional per-agent target channels in z; if given, every neighbor also sends its target.
+        pad: give every agent the slots of the agent with the most neighbors, the missing ones zero.
     """
 
     def __init__(self, adjacency: torch.Tensor, pos_idx: Sequence[Sequence[int]], u_idx: Sequence[Sequence[int]],
-                 ref_idx: Optional[Sequence[Sequence[int]]] = None):
+                 ref_idx: Optional[Sequence[Sequence[int]]] = None, pad: bool = False):
         super().__init__()
         self.neighbors = neighbor_lists(adjacency)
         self.n_agents = len(self.neighbors)
         self.sends_targets = ref_idx is not None
         self.feat_per_neighbor = len(pos_idx[0]) + 1 + len(u_idx[0]) + (len(ref_idx[0]) if self.sends_targets else 0)
-        self.out_dims = [len(nb) * self.feat_per_neighbor for nb in self.neighbors]
+        slots = max(len(nb) for nb in self.neighbors)
+        self.slots = [slots if pad else len(nb) for nb in self.neighbors]
+        self.out_dims = [k * self.feat_per_neighbor for k in self.slots]
+        self.context_masks = [[1.0] * len(nb) * self.feat_per_neighbor + [0.0] * (k - len(nb)) * self.feat_per_neighbor
+                              for nb, k in zip(self.neighbors, self.slots)]
         self.register_buffer("pos_idx", torch.as_tensor(pos_idx, dtype=torch.long), persistent=False)
         self.register_buffer("u_idx", torch.as_tensor(u_idx, dtype=torch.long), persistent=False)
         if self.sends_targets:
@@ -127,13 +138,14 @@ class NeighborFeatures(nn.Module):
             zr = z_t[..., self.ref_idx]              # (B, T, N, dz)
         feats = []
         for i, nb in enumerate(self.neighbors):
+            pad = x_t.new_zeros(*x_t.shape[:2], (self.slots[i] - len(nb)) * self.feat_per_neighbor)
             if not nb:
-                feats.append(x_t.new_zeros(*x_t.shape[:2], 0))
+                feats.append(pad)
                 continue
             rel = p[..., nb, :] - p[..., i:i + 1, :]                      # (B, T, |N_i|, 2)
             dist = torch.sqrt(rel.pow(2).sum(-1, keepdim=True) + 1e-12)  # smooth at 0 (collision)
             parts = [rel, dist, u[..., nb, :]] + ([zr[..., nb, :]] if self.sends_targets else [])
-            feats.append(torch.cat(parts, dim=-1).flatten(-2))
+            feats.append(torch.cat([torch.cat(parts, dim=-1).flatten(-2), pad], dim=-1))
         return feats
 
 
@@ -202,11 +214,14 @@ class RelayFeatures(nn.Module):
     Before anything arrives (t < d) the disturbances and inputs are zero (a delay started at rest,
     so w^j_0 = x^j_0 is not injected twice) and the positions and targets hold their values at t = 0
     (the initial configuration is known). The history is kept across calls and cleared by reset().
+
+    With pad=True every agent gets the slots of the agent with the most sources, each group
+    (disturbances; targets, offsets, inputs) padded with zeros at its end, so the prefixes above hold.
     """
 
     def __init__(self, adjacency: torch.Tensor, pos_idx: Sequence[Sequence[int]], w_idx: Sequence[Sequence[int]],
                  ref_idx: Sequence[Sequence[int]], u_idx: Optional[Sequence[Sequence[int]]] = None, hop_delay: int = 1,
-                 input_scale: float = 1.0, max_hops: Optional[int] = None):
+                 input_scale: float = 1.0, max_hops: Optional[int] = None, pad: bool = False):
         super().__init__()
         if hop_delay < 0:
             raise ValueError("hop_delay must be >= 0.")
@@ -223,10 +238,17 @@ class RelayFeatures(nn.Module):
         self.input_scale = float(input_scale)
         dw, dz, dp = len(w_idx[0]), len(ref_idx[0]), len(pos_idx[0])
         du = len(u_idx[0]) if self.sends_inputs else 0
-        self.w_out_dims = [len(src) * dw for src in self.sources]
-        self.target_dims = [len(src) * dz for src in self.sources]
-        self.out_dims = [len(src) * (dz + dp + du) for src in self.sources]
-        self.input_dims = [len(src) * du for src in self.sources]          # the last channels of the context
+        self.group_dims = {"w": dw, "z": dz, "p": dp, "u": du}
+        slots = max(len(src) for src in self.sources)
+        self.slots = [slots if pad else len(src) for src in self.sources]
+        self.w_out_dims = [k * dw for k in self.slots]
+        self.target_dims = [k * dz for k in self.slots]
+        self.out_dims = [k * (dz + dp + du) for k in self.slots]
+        self.input_dims = [k * du for k in self.slots]                     # the last channels of the context
+        group = lambda d, real, k: [1.0] * real * d + [0.0] * (k - real) * d
+        self.w_masks = [group(dw, len(src), k) for src, k in zip(self.sources, self.slots)]
+        self.context_masks = [group(dz, len(src), k) + group(dp, len(src), k) + group(du, len(src), k)
+                              for src, k in zip(self.sources, self.slots)]
         # steps of history needed: d for w, z, p; e - 1 <= d for the inputs (u_prev holds u_{t-1})
         self.memory = max((d for ds in self.delays for d in ds), default=0)
         self.register_buffer("pos_idx", torch.as_tensor(pos_idx, dtype=torch.long), persistent=False)
@@ -259,10 +281,8 @@ class RelayFeatures(nn.Module):
 
         w_extra, ctx = [], []
         for i, (src, delays) in enumerate(zip(self.sources, self.delays)):
-            if not src:
-                w_extra.append(x_t.new_zeros(*x_t.shape[:2], 0))
-                ctx.append(x_t.new_zeros(*x_t.shape[:2], 0))
-                continue
+            # zero slots closing each group (pad=True), none otherwise
+            pad = lambda g: [x_t.new_zeros(*x_t.shape[:2], (self.slots[i] - len(src)) * self.group_dims[g])]
             ws, zs, offs, us = [], [], [], []
             for j, d in zip(src, delays):
                 ws.append(at("w", d)[:, :, j])
@@ -271,7 +291,7 @@ class RelayFeatures(nn.Module):
                 offs.append(p[:, :, j] - p[:, :, i])
                 if self.sends_inputs:
                     us.append(at("u", max(d, 1) - 1)[:, :, j])    # u^j_{t-e} = u_prev of step t-e+1
-            w_extra.append(torch.cat(ws, dim=-1))
-            ctx.append(torch.cat(zs + offs + us, dim=-1))
+            w_extra.append(torch.cat(ws + pad("w"), dim=-1))
+            ctx.append(torch.cat(zs + pad("z") + offs + pad("p") + us + pad("u"), dim=-1))
         self._hist = {k: v[:, L - self.memory:] for k, v in seq.items()}
         return w_extra, ctx

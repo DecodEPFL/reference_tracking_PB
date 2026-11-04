@@ -34,6 +34,7 @@ def build_parser(description="Robots minimal experiment."):
     parser.add_argument('--context', type=str, default='ref', choices=['ref', 'none'], help='Context z fed to the operator: the reference positions, or zeros (disturbance-only baseline). Default is ref.')
     parser.add_argument('--share-weights', action=bool_flag, default=False, help='Share one operator M across all agents instead of an independent M^i per agent. Default is False.')
     parser.add_argument('--batch-agents', action=bool_flag, default=False, help='With independent weights, run the N agent operators in one vectorised call (torch.func.vmap) instead of one after the other: same results up to float rounding, faster. Falls back to the loop (with a warning) if unsupported. Default is False.')
+    parser.add_argument('--pad-agent-inputs', action=bool_flag, default=True, help='With --batch-agents, agents with fewer neighbors than others (unequal input sizes, e.g. an irregular --adjacency graph) get zero channels in place of the missing ones, so all agents can still be batched; the weights reading the padded channels are held at zero, so every agent computes what it would unpadded. Without it such agents run one by one. Default is True.')
     parser.add_argument('--num-threads', type=int, default=1, help='PyTorch intra-op threads. The closed-loop rollouts are many tiny ops, so extra threads only spin: keep 1 and run several jobs in parallel instead. Set OMP_NUM_THREADS / MKL_NUM_THREADS in the environment as well, they are read before the args. Default is 1.')
     parser.add_argument('--compile', action=bool_flag, default=False, help='With --batch-agents, compile the vmapped agent step with torch.compile: about 2.4x faster per training step on CPU, same results up to float rounding; the first steps pay the compilation (needs a C++ compiler). Default is False.')
     parser.add_argument('--match-centralized-size', action=bool_flag, default=True, help='With independent weights, shrink the widths of every M^i so all N operators together have at most the parameters of the centralized M. Default is True.')
@@ -103,6 +104,7 @@ def build_parser(description="Robots minimal experiment."):
     parser.add_argument('--alpha-obst', type=float, default=5e3, help='Weight of the obstacle avoidance loss. Default is 5e3 if "obst-av" is True, else None.')
     parser.add_argument('--alpha-obst-max', type=float, default=0.0, help='Weight of the worst-step obstacle loss: sum over robots of the max over time of the obstacle penalty (not time-averaged, so a fast pass through an obstacle is not cheap). 0 disables it. Default is 0.')
     parser.add_argument('--obst-loss', type=str, default='gaussian', choices=['gaussian', 'barrier'], help='Obstacle penalty: Gaussian bump, or barrier (R/d - 1)^2 inside radius R = --obst-radius. Default is gaussian.')
+    parser.add_argument('--col-loss', type=str, default='inverse', choices=['inverse', 'hinge'], help='Collision penalty per pair closer than --min-dist + 0.2: 1/d^2 (inverse, gradient up to ~1e8 near contact), or a squared hinge equal to it at --min-dist with a bounded gradient (hinge). Default is inverse.')
     parser.add_argument('--obst-radius', type=float, default=-1, help='Cut the obstacle penalty off at this distance from each obstacle center (continuous, 0 beyond). <= 0 keeps the untruncated Gaussian; required (> 0) for the barrier. Default is -1.')
     parser.add_argument('--min-dist', type=float, default=1.0, help='Minimum distance between agents counted as a collision. Default is 1.0 if "col-av" is True, else None.')
     parser.add_argument('--alpha-x', type=float, default=100.0, help='Weight of the tracking loss on the distance of each robot to its target (Q = alpha_x * I). Default is 100.')
@@ -116,6 +118,13 @@ def build_parser(description="Robots minimal experiment."):
     parser.add_argument('--epochs', type=int, default=-1, help='Total number of epochs for training. Default is 1000 if collision avoidance, else 50.')
     parser.add_argument('--lr', type=float, default=-1, help='Learning rate of the M_p core. Default is 2e-3 if collision avoidance, else 5e-3.')
     parser.add_argument('--lr-ratio', type=float, default=0.5, help='Learning rate of the mixer/heads relative to --lr. Default is 0.5.')
+    parser.add_argument('--lr-schedule', type=str, default='constant', choices=['constant', 'cosine'], help='constant lrs, or a linear warmup over --lr-warmup epochs then a cosine decay to --lr-final-ratio times the lrs at --epochs. Default is constant.')
+    parser.add_argument('--lr-warmup', type=int, default=0, help='Warmup epochs of the cosine schedule. Default is 0.')
+    parser.add_argument('--lr-final-ratio', type=float, default=0.01, help='Final lrs of the cosine schedule relative to the initial ones. Default is 0.01.')
+    parser.add_argument('--grad-clip', type=float, default=0.0, help='Clip the gradient norm to this value. 0 disables it. Default is 0.')
+    parser.add_argument('--grad-clip-rel', type=float, default=0.0, help='Clip the gradient norm to this times the median of the last 1000 unclipped norms, a threshold that follows the norms as they shrink. Combined with --grad-clip, the smaller bound applies. 0 disables it. Default is 0.')
+    parser.add_argument('--grad-diag', type=float, default=0.0, help='On a step whose gradient norm exceeds this times the running median, recompute the batch and log the gradient norm of each loss term, to find the term behind the spike (costs one forward and one backward per term, a few times per log period at most). 0 disables it. Default is 0.')
+    parser.add_argument('--ema-decay', type=float, default=0.0, help='Keep an exponential moving average of the weights with this decay per optimizer step; validation, the best-model selection and the returned model use the averaged weights. 0 disables it. Default is 0.')
     parser.add_argument('--log-epoch', type=int, default=-1, help='Frequency of logging in epochs. Default is 0.1 * epochs.')
     parser.add_argument('--return-best', action=bool_flag, default=True, help='Return the best model on the validation data among all logged iterations. The train data can be used instead of validation data. The Default is True.')
 
@@ -138,6 +147,14 @@ def finalize_args(args):
         args.log_epoch = max(1, math.ceil(float(args.epochs)/10))
 
     # assertions and warning
+    if args.grad_clip < 0 or args.grad_clip_rel < 0:
+        raise ValueError('--grad-clip and --grad-clip-rel must be >= 0.')
+    if args.grad_diag and args.grad_diag <= 1:
+        raise ValueError('--grad-diag must be 0 (off) or > 1.')
+    if args.lr_warmup < 0 or not 0 < args.lr_final_ratio <= 1:
+        raise ValueError('--lr-warmup must be >= 0 and --lr-final-ratio in (0, 1].')
+    if not 0 <= args.ema_decay < 1:
+        raise ValueError('--ema-decay must be in [0, 1).')
     if not args.col_av:
         args.alpha_col = None
         args.min_dist = None
@@ -197,7 +214,9 @@ def print_args(args):
     if args.alpha_final >= 0:
         msg += ' -- alpha_final: %g (t > %i)' % (args.alpha_final, args.final_start)
     msg += ' -- alpha_speed: %s' % ('Q (legacy)' if args.legacy_speed_weight else '%g' % args.alpha_speed)
-    msg += ' -- alpha_col: %.f' % args.alpha_col if args.col_av else ' -- no collision avoidance'
+    msg += ' -- alpha_col: %.f (min distance %g)' % (args.alpha_col, args.min_dist) if args.col_av else ' -- no collision avoidance'
+    if args.col_av and getattr(args, 'col_loss', 'inverse') == 'hinge':
+        msg += ' (hinge)'
     msg += ' -- alpha_obst: %.1f' % args.alpha_obst if args.obst_av else ' -- no obstacle avoidance'
     if args.obst_av and args.obst_loss == 'barrier':
         msg += ' (barrier, radius %g)' % args.obst_radius
@@ -207,6 +226,15 @@ def print_args(args):
         msg += ' -- alpha_obst_max: %g' % args.alpha_obst_max
 
     msg += '\n[INFO] Optimizer: lr: %.2e (x%.2f for mixer/heads)' % (args.lr, args.lr_ratio)
+    if getattr(args, 'lr_schedule', 'constant') == 'cosine':
+        msg += ' -- cosine schedule to x%g (warmup %i epochs)' % (args.lr_final_ratio, args.lr_warmup)
+    if getattr(args, 'grad_clip', 0) or getattr(args, 'grad_clip_rel', 0):
+        msg += ' -- grad clip: %s' % ' & '.join(([] if not args.grad_clip else ['%g' % args.grad_clip]) +
+                                                 ([] if not args.grad_clip_rel else ['%g x median' % args.grad_clip_rel]))
+    if getattr(args, 'grad_diag', 0):
+        msg += ' -- per-term diagnosis of the grad spikes above %g x median' % args.grad_diag
+    if getattr(args, 'ema_decay', 0):
+        msg += ' -- EMA of the weights: %g' % args.ema_decay
     msg += ' -- batch_size: %i' % args.batch_size + ', -- return best model for validation data among logged epochs:' + str(args.return_best)
     msg += '\n[INFO] Threads: %i' % args.num_threads
 

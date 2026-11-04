@@ -21,5 +21,12 @@ torch.compile(lambda x: torch.sin(x) + 1)(torch.randn(3))
 print("preflight: torch.compile OK")
 EOF
 
+# under runai, name the run folder after the job: a pod restarted by runai (preemption) has the same JOB_UUID
+# and continues from its last training state, a resubmitted job gets a new one and starts over.
+# Put first so that a --run-id given on the command line wins.
+if [[ -n "${JOB_UUID:-}" ]]; then
+    set -- --run-id "${JOB_NAME}_${JOB_UUID:0:8}" "$@"
+fi
+
 # a fallback to the per-agent loop is only a warning in factory.py: make it an error here
 exec python -W "error:--batch-agents disabled" Distributed/experiments/robots_formation/run.py "$@"
