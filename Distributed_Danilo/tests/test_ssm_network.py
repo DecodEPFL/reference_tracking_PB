@@ -344,3 +344,155 @@ def test_neighbor_delay_sends_the_signals_of_the_previous_step():
             torch.testing.assert_close(delayed[t][i][..., own + nb_u], now[t][i][..., own + nb_u])
             # offsets, drags and targets of the neighbors: of t - 1 (at t = 0, the t = 0 values)
             torch.testing.assert_close(delayed[t][i][..., nb_rest], now[src][i][..., nb_rest])
+
+
+# --- appended feedback: y_append (the M_p outputs y^j) and core_append (the core outputs h^j, as the REN outputs in
+# ren_mad), summed over the neighbors and appended to the core input. With SMALL: s = 4, core output 8.
+
+MODES = {'y_append': dict(fb=4, K=4.0), 'core_append': dict(fb=8, K=1.0)}
+mode_param = pytest.mark.parametrize('mode', list(MODES))
+
+
+@mode_param
+def test_append_interconnection_of_three_robots(mode):
+    """3 robots, complete graph, no input port: e = [w1; w2; w3] (12), fed-back z = [f1; f2; f3] (3 x r), v (3 x (4 + r)):
+    M_ve = blockdiag([I_4; 0_{r x 4}]), block (i, j) of M_vz = [0_{4 x r}; a I_r] (j != i), M_uz = I; the operator
+    divides f^j by K_j (the mixer bound for y, 1 for the core output) before M_vz."""
+    _, _, ctl = make(['--feedback-mode', mode, '--formation-shape', 'isosceles', '--ctx-modes', 'mixer,gate,select',
+                      '--ren-edge-weight', '0.05'])
+    op = ctl.operator
+    r, q = MODES[mode]['fb'], 4 + MODES[mode]['fb']
+    assert op.fb_dim == r and op.exo_sizes == (4, 4, 4)
+    from Distributed_Danilo.controllers.ren_mad import build_interconnection
+    ic = build_interconnection(op.weight_matrix(), op.exo_sizes, op.fb_dim, None)
+    assert ic.M_ve.shape == (3 * q, 12) and ic.M_vz.shape == (3 * q, 3 * r)
+    assert torch.equal(ic.M_uz, torch.eye(3 * r, dtype=ic.M_uz.dtype))
+    f64 = dict(dtype=torch.float64)
+    torch.testing.assert_close(ic.M_ve, torch.block_diag(*[torch.cat([torch.eye(4, **f64), torch.zeros(r, 4, **f64)])] * 3))
+    for i in range(3):
+        for j in range(3):
+            block = ic.M_vz[q * i:q * i + q, r * j:r * j + r]
+            torch.testing.assert_close(block[:4], torch.zeros(4, r, **f64))               # no feedback on the w rows
+            torch.testing.assert_close(block[4:], (0.05 if i != j else 0.0) * torch.eye(r, **f64))   # a_ij on the comm rows
+    assert op.feedback_scale.tolist() == [MODES[mode]['K']] * 3 and op.certify()['verified']
+
+
+@mode_param
+def test_append_agents_read_w_in_the_heads_and_the_feedback_in_the_core(mode):
+    _, _, ctl = make(['--feedback-mode', mode, '--formation-shape', 'isosceles', '--info-pattern', 'local', '--patches'])
+    ctl.eval()
+    r = MODES[mode]['fb']
+    agent = ctl.operator.agents[0]
+    core = agent.mp.core.core
+    assert agent.mp.core.d_input == 4 and core.d_input == 4 + agent.mp.core.d_context + r   # [w, filtered, feedback]
+    seen = {}
+    agent.mp.core.mixer.register_forward_pre_hook(lambda m, inp: seen.__setitem__('mixer', inp[0]))
+    agent.mb.register_forward_pre_hook(lambda m, inp: seen.__setitem__('mb', inp[0]))
+    core.register_forward_pre_hook(lambda m, inp: seen.__setitem__('core', inp[0]))
+    torch.manual_seed(0)
+    w, fb, c = torch.randn(2, 1, 4), torch.randn(2, 1, r), torch.randn(2, 1, agent.mp.core.d_context)
+    agent.reset()
+    out = agent(torch.cat([w, fb], -1), c, gamma=torch.tensor(3.0))
+    assert out.shape[-1] == 2 + r                                                   # [u, fed-back signal]
+    torch.testing.assert_close(seen['mixer'], w)
+    torch.testing.assert_close(seen['mb'], w)
+    torch.testing.assert_close(seen['core'][..., :4], w)
+    torch.testing.assert_close(seen['core'][..., -r:], fb)                           # feedback at the end
+    y = out[..., 2:] if mode == 'y_append' else boxtimes_timewise(agent.mp.core.mixer(w, c), out[..., 2:])   # y = A h
+    torch.testing.assert_close(out[..., :2], boxtimes_timewise(agent.mb(w, c), y))   # u = M_b ⊠ y
+
+
+@mode_param
+def test_append_network_gain_is_below_gamma_R(mode):
+    _, plant, ctl = make(['--feedback-mode', mode, '--info-pattern', 'local', '--ctx-modes', 'mixer,gate,select', '--ren-gamma', '0.5',
+                                   '--ren-edge-weight', '0.5'])
+    op = ctl.operator
+    perturb(op)
+    g = torch.Generator().manual_seed(0)
+    w = 3.0 * torch.randn(8, 30, plant.state_dim, generator=g)
+    w[4:, 1:] = 0.0
+    z = 5.0 * torch.randn(8, 30, plant.in_dim, generator=g)
+    with torch.no_grad():
+        op.reset()
+        ys = []
+        for t in range(30):
+            op(w[:, t:t + 1], z[:, t:t + 1])
+            ys.append(op._fb / op.feedback_scale[:, None])                           # the fed-back signal / K_j
+    y = torch.stack(ys, 1)
+    ratio = y.pow(2).sum((1, 2, 3)).sqrt() / w.pow(2).sum((1, 2)).sqrt()
+    assert 1e-6 < ratio.max() <= 0.5 * (1 + 1e-4)
+
+
+@mode_param
+@pytest.mark.parametrize('batch', [['--batch-agents'], ['--no-batch-agents']])
+def test_append_feedback_reaches_the_successor_only(mode, batch):
+    _, _, ctl = make(['--feedback-mode', mode, '--formation-shape', 'isosceles', '--info-pattern', 'local', '--adjacency', 'cycle',
+                               '--ren-edge-weight', '0.5'] + batch)
+    op = ctl.operator
+    torch.manual_seed(0)
+    w0, w1 = (torch.randn(1, 1, 12, requires_grad=True) for _ in range(2))
+    z = torch.randn(1, 1, 6)
+    op.reset()
+    u0 = op(w0, z)
+    u1 = op(w1, z)
+    blk = lambda g, j: g[..., 4 * j:4 * j + 4].abs().sum().item() if g is not None else 0.0
+    for i, (own, seen_j, unseen) in enumerate([(0, 1, 2), (1, 2, 0), (2, 0, 1)]):
+        g00, = torch.autograd.grad(u0[..., 2 * i:2 * i + 2].sum(), (w0,), retain_graph=True)
+        assert blk(g00, own) > 0 and blk(g00, seen_j) == 0 and blk(g00, unseen) == 0
+        g10, g11 = torch.autograd.grad(u1[..., 2 * i:2 * i + 2].sum(), (w0, w1), retain_graph=True)
+        assert blk(g10, own) > 0 and blk(g10, seen_j) > 0 and blk(g10, unseen) == 0
+        assert blk(g11, own) > 0 and blk(g11, seen_j) == 0 and blk(g11, unseen) == 0
+
+
+@mode_param
+def test_append_batch_padding_and_realization_match_the_loop(mode):
+    """Leader graph: padded + batched = unpadded loop; and the loop's realized cores = per-step capping."""
+    graph = '0,1,1,1,1;0,0,1,0,0;0,1,0,0,0;1,0,0,0,1;1,0,0,1,0'
+    argv = ['--feedback-mode', mode, '--n-agents', '5', '--formation-shape', 'bowtie', '--info-pattern', 'neighbors',
+                     '--adjacency', graph, '--patches', '--ren-edge-weight', '0.05']
+    args, plant, loop = make(argv + ['--no-batch-agents'])
+    _, _, batch = make(argv + ['--batch-agents', '--pad-agent-inputs'])
+    assert batch.operator.batch_agents and batch.operator.input_padding is not None
+    sd_loop, sd_pad = loop.state_dict(), batch.state_dict()
+    for k, v in sd_pad.items():
+        if v.shape == sd_loop[k].shape:
+            sd_pad[k] = sd_loop[k]
+            continue
+        weight = sd_pad[k.removesuffix('_v') + '_orig'] if k.endswith('_v') else v
+        keep = ~(weight == 0).all(0)
+        assert int(keep.sum()) == sd_loop[k].shape[-1], k
+        sd_pad[k] = torch.zeros_like(v)
+        sd_pad[k][..., keep] = sd_loop[k]
+    batch.load_state_dict(sd_pad)
+    loop.eval(); batch.eval()
+    train, _ = get_data(args, make_dataset(args))
+    with torch.no_grad():
+        _, _, ul = plant.rollout(loop, train[:3])
+        _, _, ub = plant.rollout(batch, train[:3])
+    # float rounding (vmapped vs looped matmuls) grows through the feedback over the horizon (~1e-8 at the first steps)
+    assert ul.abs().max() > 0 and (ub - ul).abs().max() <= 1e-3 * ul.abs().max()
+    # direct: the agents' own modules (DeepSSM caps at every step with the override)
+    op = loop.operator
+    with torch.no_grad():
+        realized_forward, realized_reset = op.forward, op.reset
+
+        def direct_reset():
+            realized_reset()
+            for a in op.agents:
+                a.reset()
+
+        def direct_forward(w, z=None, x=None, u_prev=None):
+            w3 = as_bt(w)
+            ctx = op.contexts(as_bt(z), x, u_prev)
+            if op._fb is None:
+                op._fb = w3.new_zeros(w3.shape[0], op.n_agents, op.fb_dim)
+            fb = torch.einsum("ij,bjk->bik", op._W, op._fb / op.feedback_scale[:, None])
+            w_ag = w3[..., op.w_idx]
+            out = torch.stack([a(torch.cat([w_ag[:, :, i], fb[:, None, i]], -1), ctx[i], gamma=op._overrides[i])[:, 0]
+                               for i, a in enumerate(op.agents)], 1)
+            op._fb = out[..., 2:]
+            return op.scatter_u(w3, out[..., :2].reshape(w3.shape[0], 1, -1))
+        op.forward, op.reset = direct_forward, direct_reset
+        _, _, ud = plant.rollout(loop, train[:3])
+        op.forward, op.reset = realized_forward, realized_reset
+    torch.testing.assert_close(ud, ul, rtol=1e-4, atol=1e-6)

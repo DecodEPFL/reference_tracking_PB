@@ -195,10 +195,46 @@ def readout_bound(args, u_dim: int) -> float:
     return bound
 
 
+def feedback_bound(args, u_dim: int) -> float:
+    """Gain from an M_p core's output to the fed-back signal: to u^i (readout_bound) with --feedback-mode
+    u_velocity, to y^i (the mixer bound of the contextual SSM) with y_append."""
+    mode = getattr(args, "feedback_mode", "u_velocity")
+    if mode == "core_append":                     # the core's own output
+        return 1.0
+    if mode == "y_append":
+        mixer = args.mp_type == "contextual_ssm" and "mixer" in resolve_context_modes(args)
+        return float(args.ctx_mixer_bound) if mixer else 1.0
+    return readout_bound(args, u_dim)
+
+
+def feedback_dim(args, u_dim: int) -> int:
+    """Size of the fed-back signal: u^i (u_velocity, added to w^i: no channel of its own), y^i (y_append: s) or the
+    core's output h^i (core_append: --ctx-d-features with the mixer port of the contextual SSM, else s)."""
+    mode = getattr(args, "feedback_mode", "u_velocity")
+    if mode == "u_velocity":
+        return 0
+    s = ssm_out_dim(args, u_dim)
+    if mode == "core_append" and args.mp_type == "contextual_ssm" and "mixer" in resolve_context_modes(args):
+        return int(args.ctx_d_features)
+    return s
+
+
 def certified_cap(args, u_dim: int) -> float:
     """Prescribed gain cap of every M_p core: at least any core gain override the certificate can set,
-    gamma_i (constant normalization) or gamma_i / readout_bound (none), with gamma_i < gamma_R."""
-    return 2.0 * float(args.ren_gamma) / min(1.0, readout_bound(args, u_dim))
+    gamma_i (constant normalization) or gamma_i / feedback_bound (none), with gamma_i < gamma_R."""
+    return 2.0 * float(args.ren_gamma) / min(1.0, feedback_bound(args, u_dim))
+
+
+def widen_core_input(mp: nn.Module, extra: int) -> None:
+    """Contextual M_p: give its recurrent core (only) `extra` more input channels, appended at the end of
+    [w, filtered targets]; the heads keep the sizes of Distributed/ (--feedback-mode y_append)."""
+    from neural_ssm import DeepSSM
+    cds = mp.core
+    old = cds.core
+    if old._forward_pre_hooks:
+        raise NotImplementedError("widen_core_input: the core has hooks (dynamics / select context masks).")
+    cds.core = DeepSSM(old.d_input + int(extra), old.d_output, config=old.config)
+    cds.core_input_dim = cds.core.d_input
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -241,10 +277,16 @@ def build_ssm_agents(args, plant, z_dims, input_z_dims):
     """M_p^i (input w^i, the size of Distributed/; prescribed gain cap) and M_b^i of every agent."""
     u_dim, s = plant.agent_in_dim, ssm_out_dim(args, plant.agent_in_dim)
     cap = certified_cap(args, u_dim)
+    fb = feedback_dim(args, u_dim)                # appended feedback channels (0: u_velocity)
     mps, mbs = [], []
     for i in range(plant.n_agents):
         w_dim = len(plant.state_idx[i])
-        mps.append(build_mp(args, w_dim, z_dims[i], s, input_z_dim=input_z_dims[i], gamma=cap))
+        if fb and args.mp_type == "ssm":           # the core reads [w, feedback]
+            mps.append(build_mp(args, w_dim + fb, z_dims[i], s, input_z_dim=input_z_dims[i], gamma=cap))
+        else:
+            mps.append(build_mp(args, w_dim, z_dims[i], s, input_z_dim=input_z_dims[i], gamma=cap))
+            if fb:                                 # contextual: only the inner core reads the feedback
+                widen_core_input(mps[-1], fb)
         if getattr(args, "ssm_init", "free") == "free":
             match_free_initialization(mps[-1])
         mbs.append(build_mb(args, w_dim, z_dims[i], u_dim))
@@ -330,12 +372,14 @@ def build_distributed_operator(args, plant) -> CertifiedNetworkOperator:
                 z_keep = ([1.0] * len(plant.ref_idx[i]) + mask[:td]
                           + [1.0] * (len(drag[i]) if drag is not None else 0) + mask[td:])
                 mask_padded_inputs(SimpleNamespace(mp=mps[i], mb=None if mbs is None else mbs[i]),
-                                   w_keep=[1.0] * len(plant.state_idx[i]), z_keep=z_keep)
+                                   w_keep=[1.0] * len(plant.state_idx[i]), z_keep=z_keep,
+                                   extra_core_inputs=feedback_dim(args, plant.agent_in_dim))
         # the neighbors' commands are added to the velocity channels of w^i (u is a reference offset: through the
         # inner PI loop, it acts on the velocities first)
         velocity = [k for k, c in enumerate(plant.state_idx[0]) if c in plant.vel_idx]
         operator = SSMNetworkOperator(mps, mbs, feedback_channels=velocity,
                                       feedback_norm=getattr(args, "feedback_norm", "constant"),
+                                      feedback_mode=getattr(args, "feedback_mode", "u_velocity"),
                                       batch_agents=bool(getattr(args, "batch_agents", False)),
                                       compile=bool(getattr(args, "compile", False)), **network)
         widths = ("ssm_d_model", "ssm_d_state", "ctx_d_features", "ctx_head_hidden", "mb_hidden")

@@ -73,8 +73,10 @@ def _mask_deep_ssm(ssm: nn.Module, input_keep: torch.Tensor, context_keep: torch
                          torch.cat([torch.ones(block.lru.D), context_keep]))
 
 
-def mask_padded_inputs(op: nn.Module, w_keep: Sequence[float], z_keep: Sequence[float] | None) -> None:
-    """Make the agent operator blind to its padded input channels (w_keep, z_keep: 1 real, 0 padded)."""
+def mask_padded_inputs(op: nn.Module, w_keep: Sequence[float], z_keep: Sequence[float] | None,
+                       extra_core_inputs: int = 0) -> None:
+    """Make the agent operator blind to its padded input channels (w_keep, z_keep: 1 real, 0 padded).
+    extra_core_inputs: real channels appended at the end of the recurrent core's input (--feedback-mode y_append)."""
     if not (hasattr(op, "mp") and hasattr(op, "mb")):    # an agent: FeedbackAgent here (FactorizedOperator in Distributed/)
         raise NotImplementedError(f"padded inputs are not supported for {type(op).__name__}.")
     w_keep = torch.as_tensor(w_keep, dtype=torch.float32)
@@ -85,14 +87,15 @@ def mask_padded_inputs(op: nn.Module, w_keep: Sequence[float], z_keep: Sequence[
     mp = op.mp
     if isinstance(mp, MpContextualSSM):
         c = mp.core
-        _mask_deep_ssm(c.core, torch.cat([w_keep, z_keep]) if "input" in c.context_modes else w_keep, z_keep)
+        core_keep = torch.cat([w_keep, z_keep]) if "input" in c.context_modes else w_keep
+        _mask_deep_ssm(c.core, torch.cat([core_keep, torch.ones(extra_core_inputs)]), z_keep)
         for head in (c.gate, c.mixer):
             if head is not None and getattr(head, "net", None) is not None:
                 _mask_linear(_first_linear(head.net), torch.cat([w_keep, z_keep]) if head.include_disturbance else z_keep)
     elif isinstance(mp, MpDeepSSM):
         if getattr(op, "mp_context_lifter", None) is not None:   # the l_p lift is not ported (--use-ssm rejects it)
             raise NotImplementedError("padded inputs are not supported with an l_p context lifter.")
-        _mask_deep_ssm(mp.core, w_keep, None)
+        _mask_deep_ssm(mp.core, torch.cat([w_keep, torch.ones(extra_core_inputs)]), None)
     else:
         raise NotImplementedError(f"padded inputs are not supported for M_p {type(mp).__name__}.")
 

@@ -76,22 +76,38 @@ def deep_ssm_of(mp: nn.Module) -> nn.Module:
     return mp.core.core if isinstance(mp, MpContextualSSM) else mp.core
 
 
+FEEDBACK_MODES = ("u_velocity", "y_append", "core_append")
+APPEND_MODES = ("y_append", "core_append")
+
+
 class FeedbackAgent(nn.Module):
-    """One agent: u^i = M_b(w, c) ⊠ M_p(w + E_v fb, c), called as agent([w, fb], c) -> (B, T, nu).
+    """One agent, called as agent([w, fb], c):
+
+        u_velocity:  u = M_b(w, c) ⊠ M_p(w + E_v fb, c)                  -> u (B, T, nu)
+        y_append:    y = M_p([w, fb], c) (fb appended at the core input), u = M_b(w, c) ⊠ y   -> [u, y]
+        core_append: as y_append, but returns the core's output h (before the mixer port of the contextual SSM,
+                     y = A(w, c) h; h = y for the plain SSM): the l2 block's own output     -> [u, h]
 
     The same computation as FactorizedOperator(M_p, M_b) of Distributed/ (ContextualDeepSSM.forward for the
-    contextual M_p), except that the core reads w + E_v fb while the mixer / gate heads, the select port and
-    M_b read w. gamma: optional gain override of the core (the realized templates have it in their weights).
+    contextual M_p), except for the fed-back channels, which only reach the recurrent core: the mixer / gate
+    heads, the select port and M_b read w. In y_append the core input is [w, filtered targets, fb] (the filtered
+    targets with the "input" port), so only the inner DeepSSM is wider than in Distributed/.
+    gamma: optional gain override of the core (the realized templates have it in their weights).
     """
 
-    def __init__(self, mp: nn.Module, mb: Optional[nn.Module], w_dim: int, feedback_channels: Sequence[int]):
+    def __init__(self, mp: nn.Module, mb: Optional[nn.Module], w_dim: int, feedback_channels: Sequence[int],
+                 feedback_mode: str = "u_velocity", fb_dim: Optional[int] = None):
         super().__init__()
+        if feedback_mode not in FEEDBACK_MODES:
+            raise ValueError(f"feedback_mode must be one of {FEEDBACK_MODES}.")
         self.mp, self.mb = mp, mb
-        self.w_dim, self.fb_dim = int(w_dim), len(feedback_channels)
-        E = torch.zeros(self.fb_dim, self.w_dim)
+        self.mode = feedback_mode
+        self.w_dim = int(w_dim)
+        self.fb_dim = len(feedback_channels) if feedback_mode == "u_velocity" else int(fb_dim)
+        E = torch.zeros(len(feedback_channels), self.w_dim)
         for k, c in enumerate(feedback_channels):
             E[k, c] = 1.0
-        self.register_buffer("feedback_map", E, persistent=False)   # fb (nu) -> velocity channels of w
+        self.register_buffer("feedback_map", E, persistent=False)   # u_velocity: fb (nu) -> velocity channels of w
 
     def reset(self) -> None:
         self.mp.reset()
@@ -99,12 +115,15 @@ class FeedbackAgent(nn.Module):
     def forward(self, x: torch.Tensor, z: Optional[torch.Tensor] = None, gamma=None) -> torch.Tensor:
         x = as_bt(x)
         w, fb = x[..., :self.w_dim], x[..., self.w_dim:]
-        v = w + fb @ self.feedback_map                                  # w^i + E_v fb on the velocities
+        append = self.mode in APPEND_MODES
+        v = w if append else w + fb @ self.feedback_map                 # u_velocity: w^i + E_v fb on the velocities
         mp = self.mp
         if isinstance(mp, MpContextualSSM):                            # ContextualDeepSSM.forward, core input v
             cds = mp.core
             w3, z3, _, filtered = cds._prepare_inputs(w, z, time_offset=mp._t)
             core_input = v if filtered is None else torch.cat((v, filtered), dim=-1)
+            if append:
+                core_input = torch.cat((core_input, fb), dim=-1)       # y_append: [w, filtered targets, fb]
             gates = cds.gate(w3, z3) if cds.gate is not None else None
             select = z3 if "select" in cds.context_modes else None
             features, _ = cds.core(core_input, gamma=gamma, mode=mp.mode, reset_state=False,
@@ -112,9 +131,12 @@ class FeedbackAgent(nn.Module):
             y = boxtimes_timewise(cds.mixer(w3, z3), features) if cds.mixer is not None else features
             mp._t += int(w.shape[1])
         else:
-            y = mp(v, gamma=gamma)
+            y = features = mp(torch.cat((w, fb), dim=-1) if append else v, gamma=gamma)
         y = as_bt(y)
-        return y if self.mb is None else boxtimes_timewise(self.mb(w, z), y)
+        u = y if self.mb is None else boxtimes_timewise(self.mb(w, z), y)
+        if not append:
+            return u
+        return torch.cat((u, y if self.mode == "y_append" else as_bt(features)), dim=-1)
 
 
 def _use_realized_weights(agent: FeedbackAgent) -> FeedbackAgent:
@@ -153,7 +175,10 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
             size w_dim), mapping to y^i in R^s.
         mbs: one M_b per agent (called as M_b(w^i, c^i) -> (B, T, nu, s)), or None (u^i = y^i).
         feedback_channels: the nu channels of w^i that receive the neighbors' commands (the velocities).
-        feedback_norm: 'constant' (u^j / K_j, K_j the readout bound of agent j) or 'none' (raw u^j).
+        feedback_norm: 'constant' (fed-back signal / K_j, K_j its gain bound from the core of j) or 'none' (raw).
+        feedback_mode: 'u_velocity' (the commands u^j added to the velocity channels of w^i), 'y_append' (the
+            M_p outputs y^j appended to the core input; M_b out of the loop) or 'core_append' (the outputs h^j of the
+            recurrent cores appended, as the REN outputs in ren_mad: the mixer port and M_b out of the loop).
         batch_agents: run the N agents in one vmapped call (AgentBatch), as --batch-agents in Distributed/;
             falls back to the loop (with a warning) if the agents differ in size or the cell is unsupported.
         compile: with batch_agents, compile the vmapped step (torch.compile), as --compile in Distributed/.
@@ -161,13 +186,20 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
 
     def __init__(self, mps: Sequence[nn.Module], mbs: Optional[Sequence[nn.Module]], w_idx, z_idx, u_idx,
                  adjacency: torch.Tensor, feedback_channels: Sequence[int], feedback_norm: str = "constant",
-                 batch_agents: bool = False, compile: bool = False, **network_kwargs):
+                 feedback_mode: str = "u_velocity", batch_agents: bool = False, compile: bool = False,
+                 **network_kwargs):
         super().__init__(w_idx, z_idx, u_idx, adjacency, **network_kwargs)
         if len(mps) != self.n_agents or (mbs is not None and len(mbs) != self.n_agents):
             raise ValueError("mps and mbs must list every agent.")
         if feedback_norm not in ("constant", "none"):
             raise ValueError("feedback_norm must be 'constant' or 'none'.")
-        self.feedback_norm = feedback_norm
+        if feedback_mode not in FEEDBACK_MODES:
+            raise ValueError(f"feedback_mode must be one of {FEEDBACK_MODES}.")
+        self.feedback_norm, self.feedback_mode = feedback_norm, feedback_mode
+        self.out_dim = int(mps[0].core.d_output)                                   # s, the size of y^i
+        self.core_dim = int(deep_ssm_of(mps[0]).d_output)                          # size of the core's output h^i
+        append = feedback_mode in APPEND_MODES
+        append_dim = self.out_dim if feedback_mode == "y_append" else self.core_dim
         self.agent_u_dim = self.u_dim // self.n_agents
         self.feedback_channels = [int(c) for c in feedback_channels]
         if len(self.feedback_channels) != self.agent_u_dim or not all(0 <= c < self.w_dim for c in self.feedback_channels):
@@ -178,14 +210,19 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
                 raise TypeError("--use-ssm needs MpDeepSSM or MpContextualSSM operators.")
             if not getattr(deep_ssm_of(mp), "use_cert_scaling", False):
                 raise ValueError("Every M_p must be built with a prescribed gamma (certified cap).")
-            if mp.core.d_input != self.w_dim:                  # ContextualDeepSSM / DeepSSM input (disturbance) size
-                raise ValueError("M_p input must be w^i (w_dim): the feedback is added to it, not appended.")
             ctx_in = mp.core.d_context if isinstance(mp, MpContextualSSM) and "input" in mp.core.context_modes else 0
             exo.append(self.w_dim + ctx_in)                                    # e^i = [w^i, filtered targets]
+            if isinstance(mp, MpContextualSSM) and mp.core.d_input != self.w_dim:
+                raise ValueError("The contextual M_p must read w^i (w_dim) in its heads, as in Distributed/.")
+            if deep_ssm_of(mp).d_input != self.w_dim + ctx_in + (append_dim if append else 0):
+                raise ValueError("The M_p core input must be [w^i, filtered targets] (u_velocity: the feedback is added "
+                                 "to w^i), or [w^i, filtered targets, feedback] (y_append: s, core_append: core output).")
         self.exo_sizes = tuple(exo)
-        self.agents = nn.ModuleList(FeedbackAgent(mp, None if mbs is None else mbs[i], self.w_dim, self.feedback_channels)
+        self.fb_dim = append_dim if append else self.agent_u_dim                  # size of the fed-back signal
+        self.agents = nn.ModuleList(FeedbackAgent(mp, None if mbs is None else mbs[i], self.w_dim, self.feedback_channels,
+                                                  feedback_mode, fb_dim=append_dim)
                                     for i, mp in enumerate(mps))
-        scale = self._readout_bounds() if feedback_norm == "constant" else [1.0] * self.n_agents
+        scale = self._feedback_bounds() if feedback_norm == "constant" else [1.0] * self.n_agents
         self.register_buffer("feedback_scale", torch.tensor(scale), persistent=False)   # K_j (hyperparameters)
         prefix = "mp.core.core." if isinstance(mps[0], MpContextualSSM) else "mp.core."
         self._enc_name, self._dec_name = prefix + "encoder_w", prefix + "decoder_w"
@@ -196,6 +233,7 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
         self._realized: Optional[list[dict]] = None
         self._W: Optional[torch.Tensor] = None
         self._u: Optional[torch.Tensor] = None          # (B, N, nu) commands of the previous step
+        self._fb: Optional[torch.Tensor] = None         # (B, N, fb_dim) fed-back signals of the previous step (u or y)
 
     # --- the agents' parts
     @property
@@ -214,13 +252,24 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
         """Per agent: mixer bound of M_p x spectral bound of M_b, the gain from the core output to u^i."""
         return [self._matrix_norm_bound(a.mp) * mb_norm_bound(a.mb) for a in self.agents]
 
+    def _feedback_bounds(self) -> list[float]:
+        """Per agent: gain bound from the core output to the fed-back signal before normalization: to u^i (mixer x
+        M_b) in u_velocity, to y^i (mixer) in y_append."""
+        if self.feedback_mode == "y_append":
+            return [self._matrix_norm_bound(a.mp) for a in self.agents]
+        if self.feedback_mode == "core_append":                                    # the core's own output
+            return [1.0] * self.n_agents
+        return self._readout_bounds()
+
     def _core_to_feedback(self) -> list[float]:
-        """Per agent: gain bound from the core output to the fed-back signal u^i / K_i."""
-        return [r / float(k) for r, k in zip(self._readout_bounds(), self.feedback_scale.tolist())]
+        """Per agent: gain bound from the core output to the fed-back signal / K_i."""
+        return [r / float(k) for r, k in zip(self._feedback_bounds(), self.feedback_scale.tolist())]
 
     def local_gains(self):
-        """(weights, gains, certificate) of the current parameters."""
-        weights, _, gains, certificate = self.network_gains(self.exo_sizes, self.agent_u_dim, self.feedback_channels)
+        """(weights, gains, certificate) of the current parameters: u_velocity adds the feedback onto the velocity
+        rows of w^i, y_append gives it rows of its own (as ren_mad)."""
+        comm_rows = self.feedback_channels if self.feedback_mode == "u_velocity" else None   # appended: own rows
+        weights, _, gains, certificate = self.network_gains(self.exo_sizes, self.fb_dim, comm_rows)
         return weights, gains, certificate
 
     # --- realization (once per rollout)
@@ -265,7 +314,7 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
         self._overrides = overrides.detach()                            # core gain overrides of the rollout
         self._realized = [self._realize_core(a, overrides[i]) for i, a in enumerate(self.agents)]
         self._W = weights.to(dtype)
-        self._u = None
+        self._u = self._fb = None
         self._build_runner()
         if self.batch_agents:
             self._runner.reset()                       # resets the agents, stacks their parameters + realization
@@ -288,22 +337,25 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
         if T != 1 and self.neighbor_features is not None:
             raise ValueError("Neighbor signals are causal step by step: call with T = 1.")
         w_ag = w[..., self.w_idx]                                                   # (B, T, N, dw)
-        if self._u is None:
-            self._u = w.new_zeros(B, self.n_agents, self.agent_u_dim)
+        if self._fb is None:
+            self._fb = w.new_zeros(B, self.n_agents, self.fb_dim)
         ctx = self.contexts(z, x, u_prev)
+        du = self.agent_u_dim
         u_steps = []
         for t in range(T):
-            fb = torch.einsum("ij,bjk->bik", self._W,                               # sum_j a_ij u^j_{t-1} / K_j
-                              self._u / self.feedback_scale.to(self._u.dtype)[:, None])
+            fb = torch.einsum("ij,bjk->bik", self._W,                               # sum_j a_ij (u or y)^j_{t-1} / K_j
+                              self._fb / self.feedback_scale.to(self._fb.dtype)[:, None])
             inputs = [torch.cat([w_ag[:, t:t + 1, i], fb[:, None, i]], dim=-1) for i in range(self.n_agents)]
             c_t = [None if c is None else c[:, t:t + 1] for c in ctx]
             if self.batch_agents:
-                u_t = self._runner(torch.stack(inputs), None if c_t[0] is None else torch.stack(c_t))[:, :, 0]
-                u_t = u_t.permute(1, 0, 2)                                          # (B, N, nu)
+                out = self._runner(torch.stack(inputs), None if c_t[0] is None else torch.stack(c_t))[:, :, 0]
+                out = out.permute(1, 0, 2)                                          # (B, N, nu [+ s])
             else:
-                u_t = torch.stack([as_bt(functional_call(tpl, p, (x_i, c_i)))[:, 0]
+                out = torch.stack([as_bt(functional_call(tpl, p, (x_i, c_i)))[:, 0]
                                    for tpl, p, x_i, c_i in zip(self._templates, self._params, inputs, c_t)], dim=1)
+            u_t = out[..., :du]
             self._u = u_t
+            self._fb = out[..., du:] if self.feedback_mode in APPEND_MODES else u_t
             u_steps.append(u_t.reshape(B, 1, -1))
         return self.scatter_u(w, torch.cat(u_steps, dim=1))
 
@@ -315,8 +367,8 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
         return cores + self.gain_variables()
 
     def certify(self) -> dict:
-        """Network LMI and every agent's certified bound v^i -> u^i / K_i at its gain override (the library's
-        own bounds, computed on the agents' modules from their current weights)."""
+        """Network LMI and every agent's certified bound v^i -> (fed-back signal) / K_i at its gain override (the
+        library's own bounds, computed on the agents' modules from their current weights)."""
         with torch.no_grad():
             _, gains, certificate = self.local_gains()
             network_max = float(torch.linalg.eigvalsh(certificate).max())
@@ -335,8 +387,11 @@ class SSMNetworkOperator(CertifiedNetworkOperator):
             "local_certified_bounds": [round(b, 4) for b in local],
             "core_gains": [round(c, 5) for c in cores],
             "readout_bounds": [round(r, 3) for r in self._readout_bounds()],
+            "feedback_mode": self.feedback_mode,
             "feedback_norm": self.feedback_norm,
             "exogenous_inputs": "w" if all(n == self.w_dim for n in self.exo_sizes) else "w and filtered targets",
             "edge_weights": self.edge_summary(),
-            "u_gain_bound": self.gamma_R * float(self.feedback_scale.max()),
+            # ||fed back / K|| <= gamma_R ||e||; then u = M_b y (y_append), u = M_b A h (core_append)
+            "u_gain_bound": self.gamma_R * float(self.feedback_scale.max()) * max(
+                r / f for r, f in zip(self._readout_bounds(), self._feedback_bounds())),
         }
