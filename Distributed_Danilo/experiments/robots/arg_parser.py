@@ -39,6 +39,9 @@ def build_parser(description="Robots minimal experiment."):
     parser.add_argument('--compile', action=bool_flag, default=False, help='With --batch-agents, compile the vmapped agent step with torch.compile: about 2.4x faster per training step on CPU, same results up to float rounding; the first steps pay the compilation (needs a C++ compiler). Default is False.')
     parser.add_argument('--match-centralized-size', action=bool_flag, default=True, help='With independent weights, shrink the widths of every M^i so all N operators together have at most the parameters of the centralized M. Default is True.')
     parser.add_argument('--info-pattern', type=str, default='local', choices=INFO_PATTERNS, help='Signals seen by M^i: its own w^i and z^i (local); all of w and z as the centralized M sees them (full; own agent first with --share-weights); or local plus, for each neighbor j on --adjacency, the relative position, distance and previous input u^j_{t-1} (neighbors; plus the target z^j with --neighbor-targets); or exactly the inputs of the centralized controller with --pair-features: all of w and z plus the relative position of every pair of robots measured from x_t (centralized; independent weights only); or the centralized inputs relayed over --adjacency, every robot forwarding what it receives with --relay-hop-delay steps per hop: the disturbances w^j_{t-d} of every robot j reaching it in the SSM input, and its targets z^j_{t-d} and relative positions p^j_{t-d} - p^i_{t-d} in the context, d the delay of the shortest path from j (relay; plus the inputs u^j_{t-d} with --relay-inputs). Default is local.')
+    parser.add_argument('--neighbor-drag', action=bool_flag, default=False, help='Under --info-pattern neighbors with --patches, every neighbor j sends its measured drag s^j_t instead of its distance ||p^j_t - p^i_t|| (the context signals of --info-pattern relay in Distributed/). Default is False.')
+    parser.add_argument('--neighbor-targets-input', action=bool_flag, default=False, help='Under --info-pattern neighbors with --neighbor-targets, the targets z^j of the neighbors also drive the input port of the contextual SSM (filtered, as exogenous inputs of the certificate), as the relayed targets of --info-pattern relay in Distributed/; otherwise only the own target does. The context becomes [z^i, z^j of the neighbors, drag^i, other neighbor signals]. Default is False.')
+    parser.add_argument('--neighbor-delay', type=int, default=0, help='Under --info-pattern neighbors, steps of delay of the neighbors\' positions, drags and targets: agent i forms p^j_{t-d} - p^i_{t-d} and reads s^j_{t-d}, z^j_{t-d} (1: a one-hop message of --info-pattern relay in Distributed/); u^j_{t-1} is not delayed further. Default is 0 (measured at t).')
     parser.add_argument('--neighbor-targets', action=bool_flag, default=True, help='Under --info-pattern neighbors, every neighbor j also sends its target z^j. Default is True.')
     parser.add_argument('--relay-inputs', action=bool_flag, default=False, help='Under --info-pattern relay, every robot also relays its input u^j (context only). Default is False.')
     parser.add_argument('--relay-inputs-to', type=str, default='mb', choices=['mb', 'mixers', 'all'], help='Parts of the operator reached by the inputs relayed with --relay-inputs: the external mixer M_b only (mb); the memoryless mixers, M_b and the mixer port of the contextual SSM (mixers); or also its gate and select ports, which shape the SSM dynamics (all). With mb and mixers they never reach the SSM state. Default is mb.')
@@ -186,6 +189,8 @@ def finalize_args(args):
         raise ValueError('--ren-gamma, --ren-epsilon, --ren-edge-weight and --ren-init-std must be > 0.')
     if args.ren_state_dim < 1 or args.ren_width < 1:
         raise ValueError('--ren-state-dim and --ren-width must be >= 1.')
+    if args.neighbor_delay < 0:
+        raise ValueError('--neighbor-delay must be >= 0.')
     if args.ren_learn_edges and not 0 < args.ren_edge_bounds[0] < args.ren_edge_weight < args.ren_edge_bounds[1]:
         raise ValueError('--ren-learn-edges needs 0 < LOWER < --ren-edge-weight < UPPER (--ren-edge-bounds).')
     if not args.obst_av:
@@ -211,7 +216,7 @@ def print_args(args):
 
     info = args.info_pattern
     if args.info_pattern == 'neighbors':
-        info += ' on %s graph%s' % (args.adjacency, ', with targets' if args.neighbor_targets else '')
+        info += ' on %s graph%s' % (args.adjacency, ', with targets' if args.neighbor_targets else '') + (', drag instead of distance' if getattr(args, 'neighbor_drag', False) else '') + (', targets to the SSM input' if getattr(args, 'neighbor_targets_input', False) else '') + (', delayed %i step(s)' % args.neighbor_delay if getattr(args, 'neighbor_delay', 0) else '')
     elif args.info_pattern == 'relay':
         info += ' on %s graph, %i step(s) per hop' % (args.adjacency, args.relay_hop_delay)
         if args.relay_max_hops:

@@ -2,6 +2,7 @@
 # Launch a robots_formation run in the RCP image (runai), non-interactive.
 # Usage: bash rcp_train.sh <run.py args>     e.g. ... --epochs 200 --compile
 # Set CPUS to the --cpu of the runai job (default 4).
+# Set CODE=Distributed_Danilo to run the copy with Danilo's certified network (default Distributed).
 set -euo pipefail
 cd /home/kirsch/distributed_cPB
 
@@ -29,4 +30,6 @@ if [[ -n "${JOB_UUID:-}" ]]; then
 fi
 
 # a fallback to the per-agent loop is only a warning in factory.py: make it an error here
-exec python -W "error:--batch-agents disabled" Distributed/experiments/robots_formation/run.py "$@"
+CODE=${CODE:-Distributed}
+case "$CODE" in Distributed|Distributed_Danilo) ;; *) echo "CODE must be Distributed or Distributed_Danilo, got $CODE"; exit 1 ;; esac
+exec python -W "error:--batch-agents disabled" "$CODE"/experiments/robots_formation/run.py "$@"

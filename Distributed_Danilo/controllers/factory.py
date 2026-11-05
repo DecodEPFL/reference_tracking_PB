@@ -23,6 +23,8 @@ Default: REN-MAD (ren_mad.py)
     --info-pattern local               c^i = own target (and drag)
                    neighbors           c^i = own target (and drag) + for every neighbor j on --adjacency
                                        [p^j_t - p^i_t, ||p^j_t - p^i_t||, u^j_{t-1} (, z^j_t)]
+                                       (--neighbor-drag: the measured drag s^j_t in place of the distance;
+                                       --neighbor-delay d: positions, drags and targets of t - d)
 
 The l2 operators always talk over --adjacency (as in ren_mad); --info-pattern only sets the context.
 full / centralized / relay, --share-weights, the l_p context lift and --use-w-augment are not ported.
@@ -208,7 +210,9 @@ def _network_kwargs(args, plant, neighbors, adjacency) -> dict:
     return dict(
         w_idx=plant.state_idx, z_idx=plant.ref_idx, u_idx=plant.input_idx, adjacency=adjacency,
         neighbor_features=neighbors,
-        drag_idx=drag, drag_pos=None if drag is None else [len(plant.ref_idx[i]) for i in range(plant.n_agents)],
+        # the drag comes after the exogenous prefix [z^i, targets of the neighbors (--neighbor-targets-input)]
+        drag_idx=drag, drag_pos=None if drag is None else [
+            len(plant.ref_idx[i]) + (neighbors.target_dims[i] if neighbors is not None else 0) for i in range(plant.n_agents)],
         gamma_R=float(args.ren_gamma), epsilon=float(args.ren_epsilon),
         edge_weight=float(args.ren_edge_weight), learn_edges=bool(args.ren_learn_edges),
         edge_bounds=tuple(args.ren_edge_bounds) if args.ren_edge_bounds is not None else None,
@@ -276,8 +280,21 @@ def build_distributed_operator(args, plant) -> CertifiedNetworkOperator:
     neighbors = None
     if info_pattern == "neighbors":
         ref_idx = plant.ref_idx if getattr(args, "neighbor_targets", False) else None
-        neighbors = NeighborFeatures(adjacency, pos_idx=plant.agent_pos_idx, u_idx=plant.input_idx, ref_idx=ref_idx)
-    # context of agent i: [z^i, drag^i (sticky patches), neighbor signals], as in Distributed/
+        # --neighbor-drag: the neighbors send their measured drag (sticky patches) instead of their distance
+        if getattr(args, "neighbor_drag", False) and getattr(plant, "drag_idx", None) is None:
+            raise ValueError("--neighbor-drag needs the measured drag of the sticky patches (--patches).")
+        nb_drag = plant.drag_idx if getattr(args, "neighbor_drag", False) else None
+        # --neighbor-targets-input: the neighbors' targets right after z^i, so they also drive the SSM input port
+        targets_first = bool(getattr(args, "neighbor_targets_input", False))
+        if targets_first and ref_idx is None:
+            raise ValueError("--neighbor-targets-input needs --neighbor-targets.")
+        neighbors = NeighborFeatures(adjacency, pos_idx=plant.agent_pos_idx, u_idx=plant.input_idx, ref_idx=ref_idx,
+                                     drag_idx=nb_drag, targets_first=targets_first,
+                                     delay=int(getattr(args, "neighbor_delay", 0)))
+    elif getattr(args, "neighbor_targets_input", False) or getattr(args, "neighbor_delay", 0):
+        raise ValueError("--neighbor-targets-input and --neighbor-delay need --info-pattern neighbors.")
+    # context of agent i: [z^i, drag^i (sticky patches), neighbor signals], as in Distributed/; with
+    # --neighbor-targets-input [z^i, targets of the neighbors, drag^i, other neighbor signals]
     drag = getattr(plant, "drag_idx", None)
     z_dims = [len(plant.ref_idx[i]) + (len(drag[i]) if drag is not None else 0)
               + (neighbors.out_dims[i] if neighbors is not None else 0) for i in range(n)]
@@ -292,21 +309,26 @@ def build_distributed_operator(args, plant) -> CertifiedNetworkOperator:
                   and neighbors is not None and len(set(z_dims)) > 1)
         if padded:
             neighbors = NeighborFeatures(adjacency, pos_idx=plant.agent_pos_idx, u_idx=plant.input_idx,
-                                         ref_idx=neighbors.ref_idx.tolist() if neighbors.sends_targets else None, pad=True)
+                                         ref_idx=neighbors.ref_idx.tolist() if neighbors.sends_targets else None, pad=True,
+                                         drag_idx=nb_drag, targets_first=targets_first, delay=neighbors.delay)
             network = _network_kwargs(args, plant, neighbors, adjacency)
             z_dims = [len(plant.ref_idx[i]) + (len(drag[i]) if drag is not None else 0) + neighbors.out_dims[i]
                       for i in range(n)]
-        # signals computed from the state (neighbors, drag) never drive the "input" port: only the targets
-        input_z_dims = [None if (neighbors is None and drag is None) else len(plant.ref_idx[i]) for i in range(n)]
+        # signals computed from the state (neighbors, drag) never drive the "input" port: only the targets (own, and
+        # the neighbors' with --neighbor-targets-input, as the relayed targets of Distributed/)
+        input_z_dims = [None if (neighbors is None and drag is None)
+                        else len(plant.ref_idx[i]) + (neighbors.target_dims[i] if neighbors is not None else 0)
+                        for i in range(n)]
         if n > 1 and getattr(args, "match_centralized_size", False):
             central_z_dim = plant.in_dim + (len(drag) if drag is not None else 0)
             # the real sizes: the padded columns are held at zero (as Distributed/)
             args, budget = match_centralized_size(args, plant, real_z_dims, input_z_dims, central_z_dim)
         mps, mbs = build_ssm_agents(args, plant, z_dims, input_z_dims)
         if padded:
-            for i in range(n):          # [targets, drag, neighbor slots], as the context of the agent
-                z_keep = ([1.0] * (len(plant.ref_idx[i]) + (len(drag[i]) if drag is not None else 0))
-                          + neighbors.context_masks[i])
+            for i in range(n):          # [targets, neighbor targets group, drag, neighbor slots], as the context
+                td, mask = neighbors.target_dims[i], neighbors.context_masks[i]
+                z_keep = ([1.0] * len(plant.ref_idx[i]) + mask[:td]
+                          + [1.0] * (len(drag[i]) if drag is not None else 0) + mask[td:])
                 mask_padded_inputs(SimpleNamespace(mp=mps[i], mb=None if mbs is None else mbs[i]),
                                    w_keep=[1.0] * len(plant.state_idx[i]), z_keep=z_keep)
         # the neighbors' commands are added to the velocity channels of w^i (u is a reference offset: through the

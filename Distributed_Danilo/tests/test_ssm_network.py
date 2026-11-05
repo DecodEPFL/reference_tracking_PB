@@ -251,12 +251,13 @@ def test_constant_normalization_gives_the_cores_the_local_gains():
     torch.testing.assert_close(raw.operator._overrides, torch.tensor(cr['local_gains'], dtype=torch.float32) / K, rtol=1e-4, atol=0)
 
 
-def test_padded_batch_on_an_irregular_graph_equals_the_unpadded_loop():
+@pytest.mark.parametrize('ctx', [[], ['--neighbor-drag', '--neighbor-targets-input']])
+def test_padded_batch_on_an_irregular_graph_equals_the_unpadded_loop(ctx):
     """Leader graph (robots with 1 to 4 neighbors): the neighbor slots are zero-padded to batch the agents, the
     weights reading the padding held at zero (padding.py of Distributed/); same closed loop as the unpadded loop."""
     graph = '0,1,1,1,1;0,0,1,0,0;0,1,0,0,0;1,0,0,0,1;1,0,0,1,0'
     argv = ['--n-agents', '5', '--formation-shape', 'bowtie', '--info-pattern', 'neighbors', '--adjacency', graph,
-            '--patches', '--ren-edge-weight', '0.05']
+            '--patches', '--ren-edge-weight', '0.05'] + ctx
 
     def run(extra):
         args, plant, ctl = make(argv + extra)
@@ -283,3 +284,63 @@ def test_padded_batch_on_an_irregular_graph_equals_the_unpadded_loop():
         xb, _, ub = plant.rollout(batch, train[:3])
     assert (ub - ul).abs().max() <= 1e-4 * ul.abs().max()
     assert (xb - xl).abs().max() <= 1e-4 * xl.abs().max()
+
+
+@pytest.mark.parametrize('batch', [['--no-batch-agents'], ['--batch-agents', '--pad-agent-inputs']])
+def test_neighbor_drag_and_targets_input_context_layout(batch):
+    """--neighbor-drag --neighbor-targets-input: the context of agent i is [z^i, z^j of its neighbors, s^i, then per
+    neighbor (p^j - p^i, s^j, u^j_{t-1})], the signals relayed by --info-pattern relay (plus u^j_{t-1}), and the input
+    port reads the targets prefix [z^i, z^j] only."""
+    graph = '0,1,1,1,1;0,0,1,0,0;0,1,0,0,0;1,0,0,0,1;1,0,0,1,0'
+    _, plant, ctl = make(['--n-agents', '5', '--formation-shape', 'bowtie', '--info-pattern', 'neighbors',
+                          '--adjacency', graph, '--patches', '--neighbor-drag', '--neighbor-targets-input'] + batch)
+    op = ctl.operator
+    nbs = [[1, 2, 3, 4], [2], [1], [0, 4], [0, 3]]                  # in-neighbors, in (j - i) mod N order
+    slots = max(map(len, nbs)) if op.input_padding is not None else None
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(3, 1, plant.state_dim, generator=g)
+    u = torch.randn(3, 1, plant.in_dim, generator=g)
+    z = torch.randn(3, 1, plant.in_dim + plant.n_agents, generator=g)
+    ctx = op.contexts(z, x, u)
+    pos = lambda j: x[..., plant.agent_pos_idx[j]]
+    for i, nb in enumerate(nbs):
+        k = slots or len(nb)
+        pad = lambda d: [z.new_zeros(3, 1, (k - len(nb)) * d)]
+        expected = torch.cat([z[..., plant.ref_idx[i]]] + [z[..., plant.ref_idx[j]] for j in nb] + pad(2)
+                             + [z[..., plant.drag_idx[i]]]
+                             + [torch.cat([pos(j) - pos(i), z[..., plant.drag_idx[j]], u[..., plant.input_idx[j]]], -1)
+                                for j in nb] + pad(5), dim=-1)
+        torch.testing.assert_close(ctx[i], expected)
+        keep = op.agents[i].mp.core.context_filter.mask          # the input port: own and neighbors' targets
+        assert keep.tolist() == [1.0] * (2 + 2 * k) + [0.0] * (len(keep) - 2 - 2 * k)
+    assert op.certify()['verified']
+
+
+def test_neighbor_delay_sends_the_signals_of_the_previous_step():
+    """--neighbor-delay 1: the neighbors' positions, drags and targets are those of t - 1 (held at t = 0 before), the
+    offset formed with the own position of t - 1, as a one-hop message of --info-pattern relay; u^j_{t-1} as without
+    delay, and the own target and drag of t."""
+    graph = '0,1,1,1,1;0,0,1,0,0;0,1,0,0,0;1,0,0,0,1;1,0,0,1,0'
+    argv = ['--n-agents', '5', '--formation-shape', 'bowtie', '--info-pattern', 'neighbors', '--adjacency', graph,
+            '--patches', '--neighbor-drag', '--neighbor-targets-input', '--no-batch-agents']
+    _, plant, ctl = make(argv + ['--neighbor-delay', '1'])
+    _, _, ref = make(argv)                                       # no delay: what the delayed one must replay
+    op, op0 = ctl.operator, ref.operator
+    g = torch.Generator().manual_seed(0)
+    xs = torch.randn(3, 3, plant.state_dim, generator=g)
+    us = torch.randn(3, 3, plant.in_dim, generator=g)
+    zs = torch.randn(3, 3, plant.in_dim + plant.n_agents, generator=g)
+    op.reset(); op0.reset()
+    step = lambda o, t: o.contexts(zs[:, t:t + 1], xs[:, t:t + 1], us[:, t:t + 1])
+    now = [step(op0, t) for t in range(3)]
+    delayed = [step(op, t) for t in range(3)]
+    for i in range(plant.n_agents):
+        n_nb = (now[0][i].shape[-1] - 3) // 7                    # [z^i, k targets, s^i, k x (offset, s^j, u^j)]
+        own = list(range(2)) + [2 + 2 * n_nb]                    # own target and own drag: never delayed
+        nb_u = [3 + 2 * n_nb + 5 * k + c for k in range(n_nb) for c in (3, 4)]
+        nb_rest = [c for c in range(now[0][i].shape[-1]) if c not in own + nb_u]
+        for t in range(3):
+            src = max(t - 1, 0)
+            torch.testing.assert_close(delayed[t][i][..., own + nb_u], now[t][i][..., own + nb_u])
+            # offsets, drags and targets of the neighbors: of t - 1 (at t = 0, the t = 0 values)
+            torch.testing.assert_close(delayed[t][i][..., nb_rest], now[src][i][..., nb_rest])

@@ -342,7 +342,12 @@ def main():
     plot_data = plot_data.to(device)
 
 # batch the data
-    train_dataloader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    # batch shuffling from a generator of its own, reseeded every epoch from (--init-seed, epoch): the order of the
+    # batches does not depend on how much of the global RNG the controller's construction drew, so two
+    # controllers trained with the same seeds see the same batches (and a resumed run the same as without the stop)
+    shuffle_seed = args.init_seed if getattr(args, 'init_seed', None) is not None else args.random_seed
+    shuffle_gen = torch.Generator()
+    train_dataloader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, generator=shuffle_gen)
 
 # ------------ 2. Plant ------------
     sys = make_plant(args).to(device)     # with --patches: sticky friction patches, drag scale in the context
@@ -477,11 +482,12 @@ def main():
     t = time.time()
     for epoch in range(start_epoch, 1 + args.epochs):
         set_lr(optimizer, base_lrs, epoch, args)
+        shuffle_gen.manual_seed(1_000_003 * int(shuffle_seed) + epoch)
         if resample:
             # seeded by the epoch: a resumed run draws the same rollouts; apart from the generators of get_data
             g = torch.Generator().manual_seed(10000 * (args.random_seed + 3) + epoch)
             fresh = with_patches(args, dataset.sample_train(args.num_rollouts, g), 2 * g.initial_seed() + 2)
-            train_dataloader = DataLoader(fresh.to(device), batch_size=args.batch_size, shuffle=True)
+            train_dataloader = DataLoader(fresh.to(device), batch_size=args.batch_size, shuffle=True, generator=shuffle_gen)
         # iterate over all data batches
         for step, train_data_batch in enumerate(train_dataloader):
             optimizer.zero_grad()

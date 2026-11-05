@@ -450,20 +450,26 @@ class CertifiedNetworkOperator(OperatorBase):
 
     # --- context
     def contexts(self, z: Optional[torch.Tensor], x: Optional[torch.Tensor], u_prev: Optional[torch.Tensor]):
-        """Context c^i of every agent: [z^i, drag^i, neighbor signals], as in DistributedOperator of Distributed/."""
+        """Context c^i of every agent: [z^i, drag^i, neighbor signals], as in DistributedOperator of Distributed/;
+        with the neighbors' targets first (--neighbor-targets-input) [z^i, neighbor targets, drag^i, other signals]."""
         nb = None
         if self.neighbor_features is not None:
             if x is None or u_prev is None:
                 raise ValueError("The neighbors info pattern needs x_t and u_{t-1}.")
             nb = self.neighbor_features(as_bt(x), as_bt(u_prev), z)
+        td = getattr(self.neighbor_features, "target_dims", None)
         out = []
         for i in range(self.n_agents):
             c = z[..., self.z_idx[i]] if z is not None else None
+            rest = nb[i] if nb is not None else None
+            if rest is not None and td is not None and td[i]:       # neighbors' targets group: in the prefix
+                c = torch.cat([c, rest[..., :td[i]]], dim=-1)
+                rest = rest[..., td[i]:]
             if self.drag_idx is not None:
                 e = self.drag_pos[i]
                 c = torch.cat([c[..., :e], z[..., self.drag_idx[i]], c[..., e:]], dim=-1)
-            if nb is not None:
-                c = nb[i] if c is None else torch.cat([c, nb[i]], dim=-1)
+            if rest is not None:
+                c = rest if c is None else torch.cat([c, rest], dim=-1)
             out.append(c)
         return out
 

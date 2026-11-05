@@ -99,53 +99,111 @@ def neighbor_lists(adjacency: torch.Tensor) -> list[list[int]]:
 
 
 class NeighborFeatures(nn.Module):
-    """Per-agent neighbor context [p^j_t - p^i_t, ||p^j_t - p^i_t||, u^j_{t-1} (, z^j_t)] for j in N_i.
+    """Per-agent neighbor context [p^j_t - p^i_t, ||p^j_t - p^i_t||, u^j_{t-1} (, z^j_t)] for j in N_i
+    ([p^j_t - p^i_t, s^j_t, u^j_{t-1} (, z^j_t)] with drag_idx: the neighbor's measured drag s^j_t in place of the distance).
+
+    With targets_first (needs ref_idx), the targets of all the neighbors come first, as one group, then the other
+    signals of every neighbor: [z^j_t for j in N_i, then (p^j_t - p^i_t, ., u^j_{t-1}) for j in N_i], so that the
+    context [z^i, targets of the neighbors, ...] has the exogenous signals as a prefix that can drive the SSM input
+    port, as the relayed targets of --info-pattern relay in Distributed/ (--neighbor-targets-input).
+    target_dims[i]: width of that targets group (0 without targets_first).
 
     Args:
         adjacency: (N, N) 0/1, adjacency[i, j] = 1 if i receives from j.
         pos_idx: per-agent position channels in x (each of length 2).
         u_idx: per-agent input channels in u.
         ref_idx: optional per-agent target channels in z; if given, every neighbor also sends its target.
-        pad: give every agent the slots of the agent with the most neighbors, the missing ones zero.
+        pad: give every agent the slots of the agent with the most neighbors, the missing ones zero (with
+            targets_first, each group is padded at its own end, so the prefix above holds).
+        drag_idx: optional per-agent measured drag channels in z (sticky patches); if given, every neighbor sends
+            its drag instead of the distance (--neighbor-drag: the signals relayed by --info-pattern relay).
+        targets_first: put the neighbors' targets first, as one group (see above).
+        delay: steps of delay of the neighbors' positions, drags and targets (--neighbor-delay): agent i forms
+            p^j_{t-d} - p^i_{t-d} and reads s^j_{t-d}, z^j_{t-d} (d = 1: a one-hop message of --info-pattern relay
+            with --relay-hop-delay 1). Before anything arrives (t < d) they hold their values at t = 0 (the initial
+            configuration is known), as in RelayFeatures. u^j_{t-1} is not delayed further (u_tm1 is already one
+            step old, as the relayed inputs). The history is kept across calls and cleared by reset().
     """
 
     def __init__(self, adjacency: torch.Tensor, pos_idx: Sequence[Sequence[int]], u_idx: Sequence[Sequence[int]],
-                 ref_idx: Optional[Sequence[Sequence[int]]] = None, pad: bool = False):
+                 ref_idx: Optional[Sequence[Sequence[int]]] = None, pad: bool = False,
+                 drag_idx: Optional[Sequence[Sequence[int]]] = None, targets_first: bool = False, delay: int = 0):
         super().__init__()
+        if int(delay) < 0:
+            raise ValueError("delay must be >= 0.")
+        self.delay = int(delay)
+        self._hist: Optional[dict[str, torch.Tensor]] = None
         self.neighbors = neighbor_lists(adjacency)
         self.n_agents = len(self.neighbors)
         self.sends_targets = ref_idx is not None
-        self.feat_per_neighbor = len(pos_idx[0]) + 1 + len(u_idx[0]) + (len(ref_idx[0]) if self.sends_targets else 0)
+        self.sends_drag = drag_idx is not None
+        if targets_first and not self.sends_targets:
+            raise ValueError("targets_first needs the neighbors' targets (ref_idx).")
+        self.targets_first = bool(targets_first)
+        dz = len(ref_idx[0]) if self.sends_targets else 0
+        self.target_dim = dz
+        self.feat_per_neighbor = (len(pos_idx[0]) + (len(drag_idx[0]) if self.sends_drag else 1) + len(u_idx[0]) + dz)
         slots = max(len(nb) for nb in self.neighbors)
         self.slots = [slots if pad else len(nb) for nb in self.neighbors]
         self.out_dims = [k * self.feat_per_neighbor for k in self.slots]
-        self.context_masks = [[1.0] * len(nb) * self.feat_per_neighbor + [0.0] * (k - len(nb)) * self.feat_per_neighbor
-                              for nb, k in zip(self.neighbors, self.slots)]
+        self.target_dims = [k * dz if self.targets_first else 0 for k in self.slots]
+        group = lambda d, real, k: [1.0] * real * d + [0.0] * (k - real) * d
+        if self.targets_first:
+            rest = self.feat_per_neighbor - dz
+            self.context_masks = [group(dz, len(nb), k) + group(rest, len(nb), k) for nb, k in zip(self.neighbors, self.slots)]
+        else:
+            self.context_masks = [group(self.feat_per_neighbor, len(nb), k) for nb, k in zip(self.neighbors, self.slots)]
         self.register_buffer("pos_idx", torch.as_tensor(pos_idx, dtype=torch.long), persistent=False)
         self.register_buffer("u_idx", torch.as_tensor(u_idx, dtype=torch.long), persistent=False)
         if self.sends_targets:
             self.register_buffer("ref_idx", torch.as_tensor(ref_idx, dtype=torch.long), persistent=False)
+        if self.sends_drag:
+            self.register_buffer("drag_idx", torch.as_tensor(drag_idx, dtype=torch.long), persistent=False)
+
+    def reset(self) -> None:
+        self._hist = None
 
     def forward(self, x_t: torch.Tensor, u_tm1: torch.Tensor, z_t: Optional[torch.Tensor] = None) -> list[torch.Tensor]:
         """x_t: (B, T, Nx) measured now, u_tm1: (B, T, Nu) applied at the previous step,
         z_t: (B, T, Nz) current targets (only needed if the neighbors send them).
         Returns one (B, T, out_dims[i]) tensor per agent."""
-        p = x_t[..., self.pos_idx]                   # (B, T, N, 2)
         u = u_tm1[..., self.u_idx]                   # (B, T, N, du)
+        if (self.sends_drag or self.sends_targets) and z_t is None:
+            raise ValueError("Neighbor drags and targets need the context z_t.")
+        cur = {"p": x_t[..., self.pos_idx]}          # (B, T, N, 2)
+        if self.sends_drag:
+            cur["s"] = z_t[..., self.drag_idx]
         if self.sends_targets:
-            if z_t is None:
-                raise ValueError("Neighbor targets need the context z_t.")
-            zr = z_t[..., self.ref_idx]              # (B, T, N, dz)
+            cur["z"] = z_t[..., self.ref_idx]        # (B, T, N, dz)
+        if self.delay:                               # signals of t - d, held at their t = 0 values before
+            T = x_t.shape[1]
+            if self._hist is None:
+                self._hist = {k: v[:, :1].expand(-1, self.delay, -1, -1) for k, v in cur.items()}
+            seq = {k: torch.cat([self._hist[k], v], dim=1) for k, v in cur.items()}
+            cur = {k: v[:, :T] for k, v in seq.items()}
+            self._hist = {k: v[:, T:] for k, v in seq.items()}
+        p, zr = cur["p"], cur.get("z")
+        zeros = lambda k, d: x_t.new_zeros(*x_t.shape[:2], k * d)
         feats = []
         for i, nb in enumerate(self.neighbors):
-            pad = x_t.new_zeros(*x_t.shape[:2], (self.slots[i] - len(nb)) * self.feat_per_neighbor)
+            missing = self.slots[i] - len(nb)
             if not nb:
-                feats.append(pad)
+                feats.append(zeros(missing, self.feat_per_neighbor))
                 continue
             rel = p[..., nb, :] - p[..., i:i + 1, :]                      # (B, T, |N_i|, 2)
-            dist = torch.sqrt(rel.pow(2).sum(-1, keepdim=True) + 1e-12)  # smooth at 0 (collision)
-            parts = [rel, dist, u[..., nb, :]] + ([zr[..., nb, :]] if self.sends_targets else [])
-            feats.append(torch.cat([torch.cat(parts, dim=-1).flatten(-2), pad], dim=-1))
+            if self.sends_drag:                                           # measured drag s^j_t of the neighbors
+                second = cur["s"][..., nb, :]
+            else:
+                second = torch.sqrt(rel.pow(2).sum(-1, keepdim=True) + 1e-12)  # distance, smooth at 0 (collision)
+            parts = [rel, second, u[..., nb, :]]
+            if self.targets_first:                                        # [targets group, other signals group]
+                rest = self.feat_per_neighbor - self.target_dim
+                feats.append(torch.cat([zr[..., nb, :].flatten(-2), zeros(missing, self.target_dim),
+                                        torch.cat(parts, dim=-1).flatten(-2), zeros(missing, rest)], dim=-1))
+            else:
+                parts += [zr[..., nb, :]] if self.sends_targets else []
+                feats.append(torch.cat([torch.cat(parts, dim=-1).flatten(-2), zeros(missing, self.feat_per_neighbor)],
+                                       dim=-1))
         return feats
 
 
