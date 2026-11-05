@@ -53,7 +53,7 @@ def argument_parser(argv=None):
     parser.add_argument('--patch-n', type=int, default=3, help='Number of sticky patches per rollout. Default is 3.')
     parser.add_argument('--patch-w', type=float, nargs=2, default=[2.0, 20.0], metavar=('W_MIN', 'W_MAX'), help='Range of the patch intensities w (uniform): the drag scale peaks at 1 + w in a patch centre and is 1 away from the patches. Default is 2 20 (peak scale 3 to 21; the paper uses 2 8).')
     parser.add_argument('--patch-sigma', type=float, nargs=2, default=[0.25, 1.5], metavar=('S_MIN', 'S_MAX'), help='Range of the patch widths sigma (uniform). Default is 0.25 1.5.')
-    parser.add_argument('--patch-x', type=float, nargs=2, default=None, metavar=('X_MIN', 'X_MAX'), help='Range of the x of the patch centres (uniform). Default is None (--wall-x).')
+    parser.add_argument('--patch-x', type=float, nargs=2, default=[-1.0, 5.0], metavar=('X_MIN', 'X_MAX'), help='Range of the x of the patch centres (uniform). Default is -1 5 (the centre of the arena, --wall-x -3 7).')
     parser.add_argument('--patch-y', type=float, nargs=2, default=[-1.0, 6.0], metavar=('Y_MIN', 'Y_MAX'), help='Range of the y of the patch centres (uniform). Default is -1 6 (from the start to the targets).')
     parser.add_argument('--formation-start', type=int, default=0, help='First time step penalised by the formation loss. Default is 0.')
     parser.add_argument('--target-x', type=float, nargs=2, default=[0.0, 4.0], metavar=('X_MIN', 'X_MAX'), help='Range of the x of the target centroids (uniform). Keep the widest target formation inside the arena walls (--wall-x). Default is 0 4.')
@@ -88,8 +88,6 @@ def argument_parser(argv=None):
         raise ValueError('--alpha-wall needs --wall-x X_MIN X_MAX with X_MIN < X_MAX and --wall-margin > 0.')
     if not 0 <= args.orient_margin <= 1:
         raise ValueError('--orient-margin must be in [0, 1].')
-    if args.patch_x is None:
-        args.patch_x = list(args.wall_x)
     if args.patches:
         if args.patch_n < 1:
             raise ValueError('--patches needs --patch-n >= 1.')

@@ -37,6 +37,10 @@
 #        FLIP=0.5 bash sweep_ssm.sh        half of the train/validation/test starts turned by pi (--start-flip-frac,
 #                                          target turned too): jobs ...-fs50, results in ssm_size_<TAG>[...]_fs50
 #        EPOCHS=2500 bash sweep_ssm.sh     epochs (default 2000); other than 2000: jobs ...-e2500, results in ..._e2500
+#        PATCHES=1 bash sweep_ssm.sh       sticky friction patches (--patches, default --patch-* layout:
+#                                          centres x in [-1, 5], y in [-1, 6]): every rollout its own drag terrain, log
+#                                          drag scale in the context; jobs ...-pt,
+#                                          results in ..._patches
 #        MATCH=all bash sweep_ssm.sh       a no context twin of every context point: same d_state, the d_model
 #                                          with the closest number of parameters (job ssm-noctx-m<dm>x<ds>-...
 #                                          for the twin of dm:ds); results in ssm_size_<TAG>[_fixed]_noctx_matched
@@ -53,6 +57,7 @@ MATCH=${MATCH:-}
 MATCH_DMS=${MATCH_DMS:-4 8 14 20 31}
 FLIP=${FLIP:-0}
 EPOCHS=${EPOCHS:-2000}
+PATCHES=${PATCHES:-0}
 [[ -n "$MATCH" ]] && NOCTX=1
 if (( ROLLOUTS % BATCH )); then
     echo "BATCH=$BATCH does not divide ROLLOUTS=$ROLLOUTS: the last batch of every epoch would be smaller" >&2
@@ -86,13 +91,15 @@ if [[ "$FLIP" != 0 ]]; then
     SUFFIX="${SUFFIX}-fs${pct}" BENCH="${BENCH}_fs${pct}"
 fi
 if [[ "$EPOCHS" != 2000 ]]; then SUFFIX="${SUFFIX}-e${EPOCHS}" BENCH="${BENCH}_e${EPOCHS}"; fi
+TERRAIN=""
+if [[ "$PATCHES" == 1 ]]; then SUFFIX="${SUFFIX}-pt" BENCH="${BENCH}_patches" TERRAIN="--patches"; fi
 
 BASE="--n-agents 5 --info-pattern relay --adjacency $ADJACENCY --horizon 150 --epochs $EPOCHS --lr 2e-3 --log-epoch 50
  --num-rollouts $ROLLOUTS --batch-size $BATCH --random-seed $DATA_SEED $DATA
  --col-loss hinge --grad-clip-rel 5 --lr-schedule constant --ema-decay 0
  --alpha-x 0.1 --alpha-col 10000 --alpha-speed 1 --alpha-obst-max 3000 --min-dist 0.5
  --formation-shape bowtie --alpha-form 400 --alpha-orient 200 --alpha-orient-max 1000
- --alpha-wall 1000 --large-rot-frac 0.6 --start-flip-frac $FLIP --num-threads 1 --compile $PAD
+ --alpha-wall 1000 --large-rot-frac 0.6 --start-flip-frac $FLIP --num-threads 1 --compile $PAD $TERRAIN
  --no-match-centralized-size $OPERATOR
  --dim-internal 3 --dim-nl 3 --benchmark $BENCH"
 

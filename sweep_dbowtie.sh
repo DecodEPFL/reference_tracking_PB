@@ -24,11 +24,16 @@
 #        SEEDS="1 2" bash sweep_dbowtie.sh       init seeds (default 1 2 3)
 #        EPOCHS=500 bash sweep_dbowtie.sh        epochs (default 2000, as the 5 robots sweep)
 #        CPUS=4 bash sweep_dbowtie.sh            cores per job (default 2)
+#        PATCHES=1 bash sweep_dbowtie.sh         sticky friction patches (--patches, default --patch-* layout:
+#                                                centres x in [-1, 5], y in [-1, 6]): every rollout its own drag
+#                                                terrain, log drag scale in the context; jobs dbow-...-pt,
+#                                                results in dbowtie_ssm_size_600x200_patches
 set -euo pipefail
 CPUS=${CPUS:-2}
 SEEDS=${SEEDS:-1 2 3}
 EPOCHS=${EPOCHS:-2000}
 ADJ=${ADJ:-complete}
+PATCHES=${PATCHES:-0}
 ROLLOUTS=600 BATCH=200 DATA_SEED=5
 
 case "$ADJ" in
@@ -39,15 +44,17 @@ case "$ADJ" in
 esac
 
 TAG="${ROLLOUTS}x${BATCH}"
+BENCH="dbowtie_ssm_size_$TAG" SUFFIX="" TERRAIN=""
+if [[ "$PATCHES" == 1 ]]; then SUFFIX="-pt" BENCH="${BENCH}_patches" TERRAIN="--patches"; fi
 BASE="--n-agents 8 --info-pattern relay --adjacency $ADJACENCY --horizon 150 --epochs $EPOCHS --lr 2e-3 --log-epoch 50
  --num-rollouts $ROLLOUTS --batch-size $BATCH --random-seed $DATA_SEED --resample-data
  --col-loss hinge --grad-clip-rel 5 --lr-schedule constant --ema-decay 0
  --alpha-x 0.1 --alpha-col 10000 --alpha-speed 1 --alpha-obst-max 3000 --min-dist 0.5
  --formation-shape double_bowtie --formation-base 6 --formation-height 1.2 --target-x 1 3 --target-y 7 7.1
  --alpha-form 150 --alpha-orient 100 --alpha-orient-max 500
- --alpha-wall 1000 --large-rot-frac 0.6 --num-threads 1 --compile
+ --alpha-wall 1000 --large-rot-frac 0.6 --num-threads 1 --compile $TERRAIN
  --no-match-centralized-size --mb-hidden 27 --ctx-d-features 7 --ctx-head-hidden 27
- --dim-internal 3 --dim-nl 3 --benchmark dbowtie_ssm_size_$TAG"
+ --dim-internal 3 --dim-nl 3 --benchmark $BENCH"
 
 POINTS=("$@")
 if [[ ${#POINTS[@]} -eq 0 ]]; then
@@ -56,7 +63,7 @@ fi
 
 for p in "${POINTS[@]}"; do for seed in $SEEDS; do
     dm=${p%%:*} ds=${p##*:}
-    ${DRY:+echo} runai submit --name "dbow-${GRAPH}-dm${dm}-ds${ds}-s${seed}" \
+    ${DRY:+echo} runai submit --name "dbow-${GRAPH}-dm${dm}-ds${ds}-s${seed}${SUFFIX}" \
         --image registry.rcp.epfl.ch/test_v1_kirsch/image_ssm:v1.0 \
         --gpu 0 --cpu "$CPUS" -e CPUS="$CPUS" \
         --existing-pvc claimname=sci-sti-gft-scratch,path=/scratch \

@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 
-def sample_friction_patches(num_samples, n_patches=3, x_range=(-3.0, 7.0), y_range=(-1.0, 6.0),
+def sample_friction_patches(num_samples, n_patches=3, x_range=(-1.0, 5.0), y_range=(-1.0, 6.0),
                             w_range=(2.0, 20.0), sigma_range=(0.25, 1.5), generator=None):
     """
     Random sticky patch layouts, one per rollout (as in the context-aware ICI paper): n_patches Gaussian
