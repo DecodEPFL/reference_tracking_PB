@@ -1,0 +1,185 @@
+[INFO] running on CPU
+
+==== ssm-dm14-ds16_030d0286
+  train collisions: 6/300 rollouts (15 pair-steps) -- collision loss 42.88 -- formation error 0.104
+  test  collisions: 30/500 rollouts (316 pair-steps) -- collision loss 646.96 -- formation error 0.112
+    train |rot|   0- 60 deg:   41 rollouts,   2.4% collide,   4.0 pair-steps per colliding one, collision loss    41.7 per rollout
+    train |rot|  60-120 deg:   43 rollouts,   4.7% collide,   1.5 pair-steps per colliding one, collision loss   137.7 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.5 pair-steps per colliding one, collision loss    23.9 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   3.0 pair-steps per colliding one, collision loss    46.3 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.7 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss    35.7 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  30.0% collide,  12.3 pair-steps per colliding one, collision loss  3789.4 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.7 pair-steps per colliding one, collision loss    67.1 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   4.0 pair-steps per colliding one, collision loss    47.6 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   2.0 pair-steps per colliding one, collision loss    22.9 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 40% / 65% / 97% of the total
+  test pairs that collide (rollouts): 3-4: 10, 1-2: 9, 0-3: 9, 2-3: 8, 1-4: 8, 1-3: 8, 2-4: 6, 0-4: 6, 0-1: 6, 0-2: 4
+  coverage: nearest train target, median 0.189 for the colliding test rollouts vs 0.134 for the others
+
+==== ssm-dm14-ds27_3387f98b
+  train collisions: 18/300 rollouts (51 pair-steps) -- collision loss 118.88 -- formation error 0.097
+  test  collisions: 46/500 rollouts (246 pair-steps) -- collision loss 502.03 -- formation error 0.101
+    train |rot|   0- 60 deg:   41 rollouts,   9.8% collide,   2.5 pair-steps per colliding one, collision loss   166.4 per rollout
+    train |rot|  60-120 deg:   43 rollouts,  25.6% collide,   3.1 pair-steps per colliding one, collision loss   566.9 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.0 pair-steps per colliding one, collision loss    19.8 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   3.0 pair-steps per colliding one, collision loss    40.7 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.3 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  21.5% collide,   4.6 pair-steps per colliding one, collision loss   993.3 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  32.5% collide,   6.3 pair-steps per colliding one, collision loss  2133.4 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.0 pair-steps per colliding one, collision loss    58.9 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    38.6 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   2.0 pair-steps per colliding one, collision loss    22.7 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 24% / 41% / 78% of the total
+  test pairs that collide (rollouts): 0-1: 20, 1-2: 16, 0-2: 14, 3-4: 11, 0-3: 9, 0-4: 8, 2-3: 6, 1-3: 4, 2-4: 3, 1-4: 3
+  coverage: nearest train target, median 0.185 for the colliding test rollouts vs 0.133 for the others
+
+==== ssm-dm14-ds8_c528bf86
+  train collisions: 14/300 rollouts (45 pair-steps) -- collision loss 98.45 -- formation error 0.098
+  test  collisions: 33/500 rollouts (283 pair-steps) -- collision loss 610.49 -- formation error 0.102
+    train |rot|   0- 60 deg:   41 rollouts,   4.9% collide,   4.0 pair-steps per colliding one, collision loss   116.4 per rollout
+    train |rot|  60-120 deg:   43 rollouts,  20.9% collide,   3.2 pair-steps per colliding one, collision loss   465.2 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   3.0 pair-steps per colliding one, collision loss    24.8 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    34.9 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.6 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  15.4% collide,  17.5 pair-steps per colliding one, collision loss  3015.1 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  21.2% collide,   5.2 pair-steps per colliding one, collision loss  1158.4 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.7 pair-steps per colliding one, collision loss    64.3 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    40.9 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   1.0 pair-steps per colliding one, collision loss    19.2 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 48% / 68% / 95% of the total
+  test pairs that collide (rollouts): 0-3: 16, 0-4: 14, 1-2: 12, 3-4: 8, 0-1: 7, 2-4: 6, 1-4: 6, 2-3: 4, 1-3: 4, 0-2: 4
+  coverage: nearest train target, median 0.222 for the colliding test rollouts vs 0.134 for the others
+
+==== ssm-dm4-ds16_5b1ded81
+  train collisions: 4/300 rollouts (9 pair-steps) -- collision loss 19.47 -- formation error 0.055
+  test  collisions: 13/500 rollouts (209 pair-steps) -- collision loss 450.16 -- formation error 0.062
+    train |rot|   0- 60 deg:   41 rollouts,   2.4% collide,   3.0 pair-steps per colliding one, collision loss    32.0 per rollout
+    train |rot|  60-120 deg:   43 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss    12.6 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.0 pair-steps per colliding one, collision loss    20.5 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    29.9 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.0 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,   9.2% collide,  31.5 pair-steps per colliding one, collision loss  3209.2 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,   1.2% collide,   3.0 pair-steps per colliding one, collision loss    27.1 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.3 pair-steps per colliding one, collision loss    57.8 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.0 pair-steps per colliding one, collision loss    32.5 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   1.0 pair-steps per colliding one, collision loss    14.9 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 90% / 97% / 100% of the total
+  test pairs that collide (rollouts): 1-2: 11, 3-4: 5, 0-2: 3, 0-3: 2, 0-1: 2, 2-4: 1, 1-4: 1, 1-3: 1, 0-4: 1
+  coverage: nearest train target, median 0.178 for the colliding test rollouts vs 0.137 for the others
+
+==== ssm-dm4-ds27_8b2f6319
+  train collisions: 31/300 rollouts (94 pair-steps) -- collision loss 205.05 -- formation error 0.098
+  test  collisions: 64/500 rollouts (311 pair-steps) -- collision loss 647.93 -- formation error 0.103
+    train |rot|   0- 60 deg:   41 rollouts,   2.4% collide,   3.0 pair-steps per colliding one, collision loss    31.8 per rollout
+    train |rot|  60-120 deg:   43 rollouts,  48.8% collide,   3.1 pair-steps per colliding one, collision loss  1036.8 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   7.0% collide,   2.9 pair-steps per colliding one, collision loss   121.5 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    30.3 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.1 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,   6.2% collide,   6.2 pair-steps per colliding one, collision loss   354.4 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  47.5% collide,   6.0 pair-steps per colliding one, collision loss  3052.7 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,  10.9% collide,   2.6 pair-steps per colliding one, collision loss   298.1 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    35.9 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   1.0 pair-steps per colliding one, collision loss    15.3 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 19% / 34% / 66% of the total
+  test pairs that collide (rollouts): 3-4: 22, 0-3: 22, 0-4: 19, 1-2: 15, 0-2: 14, 0-1: 13, 2-3: 9, 2-4: 8, 1-4: 8, 1-3: 4
+  coverage: nearest train target, median 0.160 for the colliding test rollouts vs 0.134 for the others
+
+==== ssm-dm4-ds8_ea8b7fb8
+  train collisions: 12/300 rollouts (25 pair-steps) -- collision loss 63.13 -- formation error 0.078
+  test  collisions: 29/500 rollouts (171 pair-steps) -- collision loss 367.08 -- formation error 0.082
+    train |rot|   0- 60 deg:   41 rollouts,   4.9% collide,   2.0 pair-steps per colliding one, collision loss   115.6 per rollout
+    train |rot|  60-120 deg:   43 rollouts,  16.3% collide,   2.0 pair-steps per colliding one, collision loss   227.7 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.5 pair-steps per colliding one, collision loss    23.1 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    32.0 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.4 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  20.0% collide,   8.2 pair-steps per colliding one, collision loss  1808.4 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  12.5% collide,   4.7 pair-steps per colliding one, collision loss   630.0 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.3 pair-steps per colliding one, collision loss    61.4 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    37.3 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   1.0 pair-steps per colliding one, collision loss    17.2 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 40% / 66% / 96% of the total
+  test pairs that collide (rollouts): 1-2: 12, 0-1: 8, 3-4: 7, 0-2: 6, 2-3: 5, 1-4: 5, 2-4: 4, 1-3: 4, 0-4: 4, 0-3: 3
+  coverage: nearest train target, median 0.218 for the colliding test rollouts vs 0.135 for the others
+
+==== ssm-dm8-ds16_9934e3c6
+  train collisions: 6/300 rollouts (15 pair-steps) -- collision loss 44.52 -- formation error 0.079
+  test  collisions: 22/500 rollouts (269 pair-steps) -- collision loss 547.84 -- formation error 0.083
+    train |rot|   0- 60 deg:   41 rollouts,   7.3% collide,   2.7 pair-steps per colliding one, collision loss   198.6 per rollout
+    train |rot|  60-120 deg:   43 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss    16.3 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.5 pair-steps per colliding one, collision loss    22.4 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    35.7 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.4 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  21.5% collide,  17.5 pair-steps per colliding one, collision loss  3920.7 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,   2.5% collide,   2.5 pair-steps per colliding one, collision loss    43.5 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.3 pair-steps per colliding one, collision loss    57.9 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    42.9 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   2.0 pair-steps per colliding one, collision loss    18.6 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 62% / 87% / 99% of the total
+  test pairs that collide (rollouts): 3-4: 9, 1-2: 9, 0-1: 6, 2-4: 3, 1-4: 3, 1-3: 3, 0-4: 3, 0-3: 3, 2-3: 2, 0-2: 2
+  coverage: nearest train target, median 0.189 for the colliding test rollouts vs 0.135 for the others
+
+==== ssm-dm8-ds27_3866c52b
+  train collisions: 9/300 rollouts (20 pair-steps) -- collision loss 51.01 -- formation error 0.078
+  test  collisions: 27/500 rollouts (221 pair-steps) -- collision loss 416.69 -- formation error 0.079
+    train |rot|   0- 60 deg:   41 rollouts,  14.6% collide,   2.3 pair-steps per colliding one, collision loss   256.0 per rollout
+    train |rot|  60-120 deg:   43 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss    13.7 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   2.0 pair-steps per colliding one, collision loss    21.5 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   2.0 pair-steps per colliding one, collision loss    32.1 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     2.1 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  24.6% collide,  11.3 pair-steps per colliding one, collision loss  2665.8 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,   6.2% collide,   4.2 pair-steps per colliding one, collision loss   258.5 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.3 pair-steps per colliding one, collision loss    55.4 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   3.5 pair-steps per colliding one, collision loss    36.4 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   2.0 pair-steps per colliding one, collision loss    16.3 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 42% / 65% / 98% of the total
+  test pairs that collide (rollouts): 1-2: 10, 3-4: 8, 0-3: 8, 0-4: 6, 0-2: 6, 0-1: 5, 2-3: 4, 2-4: 3, 1-4: 2, 1-3: 1
+  coverage: nearest train target, median 0.218 for the colliding test rollouts vs 0.135 for the others
+
+==== ssm-dm8-ds8_e809e870
+  train collisions: 12/300 rollouts (55 pair-steps) -- collision loss 124.15 -- formation error 0.138
+  test  collisions: 42/500 rollouts (405 pair-steps) -- collision loss 792.20 -- formation error 0.144
+    train |rot|   0- 60 deg:   41 rollouts,   9.8% collide,   6.8 pair-steps per colliding one, collision loss   399.7 per rollout
+    train |rot|  60-120 deg:   43 rollouts,  11.6% collide,   3.6 pair-steps per colliding one, collision loss   337.0 per rollout
+    train |rot| 120-150 deg:  115 rollouts,   1.7% collide,   3.5 pair-steps per colliding one, collision loss    31.0 per rollout
+    train |rot| 150-165 deg:   51 rollouts,   2.0% collide,   3.0 pair-steps per colliding one, collision loss    50.6 per rollout
+    train |rot| 165-180 deg:   50 rollouts,   0.0% collide,   0.0 pair-steps per colliding one, collision loss     4.4 per rollout
+    test  |rot|   0- 60 deg:   65 rollouts,  23.1% collide,  17.5 pair-steps per colliding one, collision loss  3978.3 per rollout
+    test  |rot|  60-120 deg:   80 rollouts,  26.2% collide,   5.8 pair-steps per colliding one, collision loss  1482.5 per rollout
+    test  |rot| 120-150 deg:  175 rollouts,   1.7% collide,   3.7 pair-steps per colliding one, collision loss    71.3 per rollout
+    test  |rot| 150-165 deg:   87 rollouts,   2.3% collide,   4.0 pair-steps per colliding one, collision loss    45.6 per rollout
+    test  |rot| 165-180 deg:   93 rollouts,   1.1% collide,   2.0 pair-steps per colliding one, collision loss    26.4 per rollout
+  test collision loss from the worst 5/10/25 rollouts: 40% / 61% / 89% of the total
+  test pairs that collide (rollouts): 0-2: 15, 1-2: 12, 0-1: 12, 3-4: 8, 2-4: 7, 2-3: 7, 1-4: 7, 0-3: 4, 1-3: 3, 0-4: 3
+  coverage: nearest train target, median 0.215 for the colliding test rollouts vs 0.133 for the others
+
+==== over the 9 runs (test rollouts)
+  collide in 0 run(s): 380 rollouts -- median |rot| 147.8 deg -- median nearest train target 0.128
+  collide in 1 run(s):  49 rollouts -- median |rot| 102.4 deg -- median nearest train target 0.171
+  collide in 2 run(s):  29 rollouts -- median |rot|  83.4 deg -- median nearest train target 0.196
+  collide in 3 run(s):  22 rollouts -- median |rot|  77.6 deg -- median nearest train target 0.223
+  collide in 4 run(s):   2 rollouts -- median |rot|  27.1 deg -- median nearest train target 0.101
+  collide in 5 run(s):   5 rollouts -- median |rot|  55.9 deg -- median nearest train target 0.218
+  collide in 6 run(s):   5 rollouts -- median |rot|  50.0 deg -- median nearest train target 0.283
+  collide in 7 run(s):   1 rollouts -- median |rot|  48.4 deg -- median nearest train target 0.469
+  collide in 9 run(s):   7 rollouts -- median |rot| 147.7 deg -- median nearest train target 0.135
+
+  hardest test rollouts (most runs colliding, then most pair-steps):
+    idx  runs pair-steps      rot           centre   nn train |x0 noise|
+    114     9         67   -83.2° (  1.95,  6.10)      0.178     1.21
+      4     9         46  -147.7° (  0.86,  6.00)      0.063     1.24
+     90     9         35   163.5° (  3.86,  6.02)      0.118     1.16
+     54     9         29  -162.9° (  3.24,  6.01)      0.118     1.27
+    349     9         25   137.7° (  1.38,  6.03)      0.135     1.05
+    211     9         19   143.7° (  0.46,  6.00)      0.139     1.03
+    315     9         14  -167.0° (  2.67,  6.09)      0.161     0.76
+    167     7        144    48.4° (  0.23,  6.02)      0.469     0.68
+    307     6        217    50.0° (  3.22,  6.00)      0.352     0.76
+     30     6        157    45.9° (  3.77,  6.09)      0.497     0.99
+     81     6        112    52.6° (  2.23,  6.03)      0.283     1.01
+    180     6        101    57.0° (  3.52,  6.03)      0.264     1.04
+    103     6         97    41.1° (  1.27,  6.00)      0.222     1.06
+      0     5         75    56.5° (  2.14,  6.02)      0.218     0.90
+    216     5         69    55.7° (  2.97,  6.09)      0.341     0.77
+
+saved /home/kirsch/distributed_cPB/Distributed/experiments/robots_formation/saved_results/5_robots/cycle/benchmark/ssm_size/collision_diagnostic/rollouts.csv and /home/kirsch/distributed_cPB/Distributed/experiments/robots_formation/saved_results/5_robots/cycle/benchmark/ssm_size/collision_diagnostic/collision_diagnostic.pdf

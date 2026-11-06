@@ -1,0 +1,16 @@
+2026-10-28 12:57:07,639 
+[INFO] Dataset: n_agents: 5 -- num_rollouts: 300 -- std_ini: 0.20 -- time horizon: 150
+[INFO] Plant: spring constant: 1.00 -- use linearized plant: False
+[INFO] Controller: distributed (independent weights, info: relay on complete graph, 1 step(s) per hop) -- M_p: contextual_ssm -- M_b: bounded_mlp -- context: ref -- agents batched (vmap) (compiled) -- rank s: 16 -- SSM tv: 4 layers, d_model 32, d_state 64 -- ctx ports: mixer,gate,select,input, filter: exponential
+[INFO] Loss:  alpha_x: 0.1 -- alpha_u: 0.050000 -- alpha_final: 400 (t > 90) -- alpha_speed: 1 -- alpha_col: 10000 -- alpha_obst: 15000.0 (cut off at radius 1) -- alpha_obst_max: 3000
+[INFO] Optimizer: lr: 2.00e-03 (x0.50 for mixer/heads) -- batch_size: 100, -- return best model for validation data among logged epochs:True
+[INFO] Threads: 1
+[INFO] Formation: bowtie, width 4, height 1.2 -- graph: complete -- alpha_form: 400 -- deadband: 0.1 -- from t = 0 -- target rotation: True -- 60% of the train/test targets with |angle| >= 120 deg -- alpha_orient: 200, alpha_orient_max: 1000 (margin 0.5)
+[INFO] Arena walls: x in [-3, 7] -- alpha_wall: 1000 (margin 0.5)
+2026-10-28 12:57:09,097 Plotting closed-loop trajectories of the baseline without the operator (u = 0)...
+2026-10-28 12:57:09,162 Number of parameters: 133750 (M_p core: 80990)
+2026-10-28 12:57:09,162 Matched to the centralized M (136660 parameters) with widths {'ssm_d_model': 14, 'ssm_d_state': 27, 'ctx_d_features': 7, 'ctx_head_hidden': 27, 'mb_hidden': 27, 'dim_internal': 3, 'dim_nl': 3}
+2026-10-28 12:57:40,364 
+------------ Begin training ------------
+2026-10-28 12:58:51,532 Epoch: 0 --- train loss: 150755.44 ---||--- validation loss: 108770.35 (best so far) ---||--- time: 71 s
+    validation terms: tracking: 3.21 | final: 106.99 | speed: 53.83 | input: 1.58 | collision: 42584.69 | obstacle: 270.52 | obstacle_max: 2013.80 | wall: 1423.60 | formation: 9356.33 | orientation: 1224.40 | orientation_max: 51731.41 -- formation error: mean 1.017 | max 5.886 | mirrored: 100%

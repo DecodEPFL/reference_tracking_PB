@@ -162,4 +162,10 @@ cython_debug/
 .idea/
 
 experiments/*/saved_results/
+# robots_formation results are tracked, except the heavy files: gif frames, gifs, checkpoints
+!experiments/robots_formation/saved_results/
+experiments/robots_formation/saved_results/**/*.png
+!experiments/robots_formation/saved_results/**/*_summary/*.png
+experiments/robots_formation/saved_results/**/*.gif
+experiments/robots_formation/saved_results/**/*.pt
 *.pkl

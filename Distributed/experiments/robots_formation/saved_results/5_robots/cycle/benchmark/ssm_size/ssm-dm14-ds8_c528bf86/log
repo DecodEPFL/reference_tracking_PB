@@ -1,0 +1,44 @@
+2026-10-29 09:47:07,294 
+[INFO] Dataset: n_agents: 5 -- num_rollouts: 300 -- std_ini: 0.20 -- time horizon: 150
+[INFO] Plant: spring constant: 1.00 -- use linearized plant: False
+[INFO] Controller: distributed (independent weights, info: relay on cycle graph, 1 step(s) per hop) -- M_p: contextual_ssm -- M_b: bounded_mlp -- context: ref -- agents batched (vmap) (compiled) -- rank s: 16 -- SSM tv: 4 layers, d_model 14, d_state 8 -- ctx ports: mixer,gate,select,input, filter: exponential
+[INFO] Loss:  alpha_x: 0.1 -- alpha_u: 0.050000 -- alpha_final: 400 (t > 90) -- alpha_speed: 1 -- alpha_col: 10000 -- alpha_obst: 15000.0 (cut off at radius 1) -- alpha_obst_max: 3000
+[INFO] Optimizer: lr: 2.00e-03 (x0.50 for mixer/heads) -- batch_size: 100, -- return best model for validation data among logged epochs:True
+[INFO] Threads: 1
+[INFO] Formation: bowtie, width 4, height 1.2 -- graph: complete -- alpha_form: 400 -- deadband: 0.1 -- from t = 0 -- target rotation: True -- 60% of the train/test targets with |angle| >= 120 deg -- alpha_orient: 200, alpha_orient_max: 1000 (margin 0.5)
+[INFO] Arena walls: x in [-3, 7] -- alpha_wall: 1000 (margin 0.5)
+2026-10-29 09:47:07,318 [INFO] Code version: f58882d+dirty
+2026-10-29 09:47:08,359 Plotting closed-loop trajectories of the baseline without the operator (u = 0)...
+2026-10-29 09:47:08,422 Number of parameters: 84730 (M_p core: 31970)
+2026-10-29 09:47:38,338 
+------------ Begin training ------------
+2026-10-29 09:50:35,367 Epoch: 0 --- train loss: 858006.75 ---||--- validation loss: 779670.38 (best so far) ---||--- time: 177 s
+    validation terms: tracking: 4.48 | final: 173.53 | speed: 68.34 | input: 3.40 | collision: 32915.40 | obstacle: 302.45 | obstacle_max: 2986.47 | wall: 4069.70 | formation: 19504.25 | orientation: 20605.48 | orientation_max: 699036.94 -- formation error: mean 1.370 | max 8.000 | mirrored: 100%
+2026-10-29 10:16:20,910 Epoch: 200 --- train loss: 11443.05 ---||--- validation loss: 10444.04 (best so far) ---||--- time: 1545 s
+    validation terms: tracking: 2.62 | final: 20.32 | speed: 35.83 | input: 1.46 | collision: 2977.71 | obstacle: 164.34 | obstacle_max: 1484.48 | wall: 1.18 | formation: 1340.61 | orientation: 46.35 | orientation_max: 4369.14 -- formation error: mean 0.360 | max 3.179 | mirrored: 96%
+2026-10-29 10:42:18,798 Epoch: 400 --- train loss: 6793.33 ---||--- validation loss: 6696.54 (best so far) ---||--- time: 1558 s
+    validation terms: tracking: 2.67 | final: 22.08 | speed: 38.47 | input: 2.70 | collision: 2061.59 | obstacle: 37.78 | obstacle_max: 461.50 | wall: 0.67 | formation: 923.35 | orientation: 30.66 | orientation_max: 3115.08 -- formation error: mean 0.284 | max 2.831 | mirrored: 96%
+2026-10-29 11:07:42,677 Epoch: 600 --- train loss: 4516.52 ---||--- validation loss: 4448.40 (best so far) ---||--- time: 1524 s
+    validation terms: tracking: 2.63 | final: 15.86 | speed: 41.45 | input: 3.62 | collision: 1219.38 | obstacle: 15.07 | obstacle_max: 188.07 | wall: 0.00 | formation: 700.32 | orientation: 19.87 | orientation_max: 2242.13 -- formation error: mean 0.243 | max 2.566 | mirrored: 92%
+2026-10-29 11:33:52,064 Epoch: 800 --- train loss: 4245.70 ---||--- validation loss: 3880.48 (best so far) ---||--- time: 1569 s
+    validation terms: tracking: 2.60 | final: 10.08 | speed: 41.61 | input: 4.41 | collision: 1086.23 | obstacle: 7.58 | obstacle_max: 90.07 | wall: 0.00 | formation: 584.51 | orientation: 16.47 | orientation_max: 2036.93 -- formation error: mean 0.219 | max 2.549 | mirrored: 89%
+2026-10-29 12:01:37,596 Epoch: 1000 --- train loss: 3351.29 ---||--- validation loss: 3537.97 (best so far) ---||--- time: 1665 s
+    validation terms: tracking: 2.57 | final: 6.35 | speed: 41.48 | input: 5.40 | collision: 971.79 | obstacle: 3.62 | obstacle_max: 42.66 | wall: 0.00 | formation: 508.49 | orientation: 13.37 | orientation_max: 1942.23 -- formation error: mean 0.199 | max 2.516 | mirrored: 86%
+2026-10-29 12:28:45,180 Epoch: 1200 --- train loss: 882.11 ---||--- validation loss: 1237.27 (best so far) ---||--- time: 1628 s
+    validation terms: tracking: 2.61 | final: 7.42 | speed: 40.48 | input: 4.00 | collision: 289.66 | obstacle: 26.46 | obstacle_max: 228.81 | wall: 0.00 | formation: 385.12 | orientation: 2.68 | orientation_max: 250.04 -- formation error: mean 0.213 | max 1.756 | mirrored: 5%
+2026-10-29 12:56:20,105 Epoch: 1400 --- train loss: 844.45 ---||--- validation loss: 810.06 (best so far) ---||--- time: 1655 s
+    validation terms: tracking: 2.82 | final: 5.35 | speed: 38.52 | input: 4.90 | collision: 210.19 | obstacle: 12.96 | obstacle_max: 117.90 | wall: 0.00 | formation: 197.71 | orientation: 2.22 | orientation_max: 217.48 -- formation error: mean 0.152 | max 1.373 | mirrored: 4%
+2026-10-29 13:26:21,430 Epoch: 1600 --- train loss: 586.27 ---||--- validation loss: 632.63 (best so far) ---||--- time: 1801 s
+    validation terms: tracking: 2.91 | final: 4.54 | speed: 37.88 | input: 5.71 | collision: 174.89 | obstacle: 5.24 | obstacle_max: 50.03 | wall: 0.00 | formation: 144.75 | orientation: 2.04 | orientation_max: 204.65 -- formation error: mean 0.128 | max 1.226 | mirrored: 4%
+2026-10-29 13:52:39,558 Epoch: 1800 --- train loss: 662.88 ---||--- validation loss: 517.43 (best so far) ---||--- time: 1578 s
+    validation terms: tracking: 2.97 | final: 4.42 | speed: 37.37 | input: 6.27 | collision: 149.64 | obstacle: 1.18 | obstacle_max: 14.33 | wall: 0.00 | formation: 111.22 | orientation: 1.80 | orientation_max: 188.23 -- formation error: mean 0.111 | max 1.087 | mirrored: 4%
+2026-10-29 14:17:40,907 Epoch: 2000 --- train loss: 443.89 ---||--- validation loss: 451.75 (best so far) ---||--- time: 1501 s
+    validation terms: tracking: 3.03 | final: 4.43 | speed: 36.75 | input: 6.80 | collision: 131.63 | obstacle: 0.37 | obstacle_max: 5.62 | wall: 0.00 | formation: 88.23 | orientation: 1.56 | orientation_max: 173.34 -- formation error: mean 0.098 | max 0.975 | mirrored: 4%
+2026-10-29 14:17:41,494 [INFO] saved trained model.
+2026-10-29 14:17:41,494 
+[INFO] evaluating the trained controller on 300 training rollouts.
+2026-10-29 14:17:43,230 Loss: 451.7532 -- tracking: 3.03 | final: 4.43 | speed: 36.75 | input: 6.80 | collision: 131.63 | obstacle: 0.37 | obstacle_max: 5.62 | wall: 0.00 | formation: 88.23 | orientation: 1.56 | orientation_max: 173.34 -- formation error: mean 0.098 | max 0.975 | mirrored: 4% -- Collisions: 14/300 rollouts (45 pair-steps)
+2026-10-29 14:17:43,230 
+[INFO] evaluating the trained controller on 500 test rollouts.
+2026-10-29 14:18:23,596 Loss: 1187.4008 -- tracking: 3.02 | final: 4.32 | speed: 36.63 | input: 6.74 | collision: 742.94 | obstacle: 0.70 | obstacle_max: 8.74 | wall: 0.00 | formation: 101.38 | orientation: 2.86 | orientation_max: 280.06 -- formation error: mean 0.099 | max 0.977 | mirrored: 6% -- Collisions: 31/500 rollouts (281 pair-steps)
+2026-10-29 14:18:23,596 Plotting closed-loop trajectories using the trained controller...
